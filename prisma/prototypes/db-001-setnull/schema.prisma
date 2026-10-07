@@ -1,0 +1,189 @@
+generator client {
+  provider = "prisma-client"
+  output   = "./generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Tenant {
+  id                    String                 @id @db.Uuid
+  academicUnits         AcademicUnit[]
+  admissionApplications AdmissionApplication[]
+  admissions            Admission[]
+  feeAssignments        FeeAssignment[]
+  feeDemands             FeeDemand[]
+  paymentOrders          PaymentOrder[]
+  payments               Payment[]
+  gatewayTransactions   GatewayTransaction[]
+  credits                Credit[]
+  invoices               Invoice[]
+  settlements            Settlement[]
+  auditHead              AuditChainHead?
+  auditLog               AuditLog[]
+}
+
+model AcademicUnit {
+  id       String @id @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  deleteEligible Boolean @default(false) @map("delete_eligible")
+  parentId String? @db.Uuid
+  parent   AcademicUnit? @relation("AcademicUnitTree", fields: [tenantId, parentId], references: [tenantId, id], onDelete: NoAction)
+  children AcademicUnit[] @relation("AcademicUnitTree")
+
+  @@unique([tenantId, id])
+  @@index([tenantId, parentId], map: "academic_units_tenant_parent_idx")
+  @@map("academic_units")
+}
+
+model AdmissionApplication {
+  id       String @id @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  deleteEligible Boolean @default(false) @map("delete_eligible")
+  admissions Admission[]
+
+  @@unique([tenantId, id])
+  @@map("admission_applications")
+}
+
+model Admission {
+  id            String @id @db.Uuid
+  tenantId      String @db.Uuid
+  tenant        Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  applicationId String? @db.Uuid
+  application   AdmissionApplication? @relation(fields: [tenantId, applicationId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, applicationId], map: "admissions_tenant_application_idx")
+  @@map("admissions")
+}
+
+model FeeAssignment {
+  id       String @id @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  deleteEligible Boolean @default(false) @map("delete_eligible")
+  demands  FeeDemand[]
+
+  @@unique([tenantId, id])
+  @@map("fee_assignments")
+}
+
+model FeeDemand {
+  id              String @id @db.Uuid
+  tenantId        String @db.Uuid
+  tenant          Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  deleteEligible  Boolean @default(false) @map("delete_eligible")
+  feeAssignmentId String? @db.Uuid
+  feeAssignment   FeeAssignment? @relation(fields: [tenantId, feeAssignmentId], references: [tenantId, id], onDelete: NoAction)
+  invoices        Invoice[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, feeAssignmentId], map: "fee_demands_tenant_assignment_idx")
+  @@map("fee_demands")
+}
+
+model PaymentOrder {
+  id       String @id @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  payments Payment[]
+  gatewayTransactions GatewayTransaction[]
+
+  @@unique([tenantId, id])
+  @@map("payment_orders")
+}
+
+model Payment {
+  id             String @id @db.Uuid
+  tenantId       String @db.Uuid
+  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  deleteEligible Boolean @default(false) @map("delete_eligible")
+  paymentOrderId String? @db.Uuid
+  paymentOrder   PaymentOrder? @relation(fields: [tenantId, paymentOrderId], references: [tenantId, id], onDelete: NoAction)
+  credits        Credit[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, paymentOrderId], map: "payments_tenant_order_idx")
+  @@map("payments")
+}
+
+model GatewayTransaction {
+  id             String @id @db.Uuid
+  tenantId       String @db.Uuid
+  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  paymentOrderId String? @db.Uuid
+  paymentOrder   PaymentOrder? @relation(fields: [tenantId, paymentOrderId], references: [tenantId, id], onDelete: NoAction)
+  settlementId   String? @db.Uuid
+  settlement     Settlement? @relation(fields: [tenantId, settlementId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, paymentOrderId], map: "gateway_transactions_tenant_order_idx")
+  @@index([tenantId, settlementId], map: "gateway_transactions_tenant_settlement_idx")
+  @@map("gateway_transactions")
+}
+
+model Credit {
+  id       String @id @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  paymentId String? @db.Uuid
+  payment   Payment? @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, paymentId], map: "credits_tenant_payment_idx")
+  @@map("credits")
+}
+
+model Invoice {
+  id       String @id @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  demandId String? @db.Uuid
+  demand   FeeDemand? @relation(fields: [tenantId, demandId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, demandId], map: "invoices_tenant_demand_idx")
+  @@map("invoices")
+}
+
+model Settlement {
+  id       String @id @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  gatewayTransactions GatewayTransaction[]
+
+  @@unique([tenantId, id])
+  @@map("settlements")
+}
+
+model AuditChainHead {
+  tenantId     String @id @db.Uuid
+  lastSequence BigInt @default(0) @map("last_sequence")
+  lastHash     String @default("GENESIS") @map("last_hash")
+  tenant       Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@map("audit_chain_heads")
+}
+
+model AuditLog {
+  tenantId      String   @db.Uuid
+  chainSequence BigInt   @map("chain_sequence")
+  entityTable   String   @map("entity_table")
+  entityId      String   @db.Uuid @map("entity_id")
+  operation     String
+  beforeImage   Json     @db.JsonB @map("before_image")
+  actorType     String   @default("DATABASE") @map("actor_type")
+  previousHash  String   @map("previous_hash")
+  eventHash     String   @map("event_hash")
+  appendNonce   String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("append_nonce")
+  recordedAt    DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6) @map("recorded_at")
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@id([tenantId, chainSequence])
+  @@unique([tenantId, appendNonce], map: "audit_log_tenantId_append_nonce_key")
+  @@map("audit_log")
+}

@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.*
+!.env.example
+!.env.neon.example
+!.env.docker.local.example
+!.env.production.example
+
+# Test / coverage
+coverage/
+*.lcov
+test-results/
+playwright-report/
+
+# Prisma generated
+prisma/migrations/dev.db*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Uploads / local storage
+storage/
+uploads/
+tmp/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Sentry
+.sentryclirc
+
+# npm cache / temp relocated here because the system drive is full
+.npm-cache/
+.tmp/
+.freebuff/
+.pnpm-store/
+
+# Prisma generated client (created by `prisma generate`)
+packages/database/src/generated/
+prisma/prototypes/db-001-setnull/generated/

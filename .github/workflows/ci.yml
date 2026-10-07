@@ -1,0 +1,252 @@
+# =====================================================================================
+# Continuous integration
+# =====================================================================================
+#
+# The financial core is the reason this pipeline exists. A green run must mean:
+#
+#   * the money arithmetic and the fee engine behave as specified
+#   * the gateway contracts, state machines and signature verification hold
+#   * every package and application still compiles under `strict`
+#   * the images still build, so a deploy is never the first time that is tested
+#
+# Deployment is gated on all of it: a failing test blocks the release, because a
+# fee calculation that is wrong for one student is wrong for four hundred.
+# =====================================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  # A new push to the same branch cancels the previous run; the older result is
+  # already stale and keeping both wastes the runner pool.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI never talks to a real provider. These satisfy schema validation only.
+  NODE_ENV: test
+  REDIS_URL: redis://localhost:6379
+  JWT_SECRET: ci-jwt-secret-that-is-long-enough-to-pass-validation
+  JWT_REFRESH_SECRET: ci-refresh-secret-that-is-long-enough-to-pass-validation
+  ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+jobs:
+  verify:
+    name: Typecheck, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_TARGET_HOST: localhost
+      DATABASE_TARGET_PORT: 5432
+      DATABASE_TARGET_NAME: feeplatform_ci
+      DATABASE_TARGET_SCHEMA: public
+      DATABASE_CLUSTER_MODE: bundled
+      POSTGRES_USER: feepostgres
+      POSTGRES_PASSWORD: feepostgres
+      MIGRATION_DATABASE_ROLE: fee_migrator
+      MIGRATION_DATABASE_PASSWORD_URI_ENCODED: fee-migrator-ci-secret
+      RUNTIME_DATABASE_ROLE: fee_runtime
+      RUNTIME_DATABASE_PASSWORD_URI_ENCODED: fee-runtime-ci-secret
+      BACKUP_DATABASE_ROLE: fee_backup
+      BACKUP_DATABASE_PASSWORD: fee-backup-ci-secret
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: feepostgres
+          POSTGRES_PASSWORD: feepostgres
+          POSTGRES_DB: feeplatform_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U feepostgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build encrypted backup image for recovery integration checks
+        run: docker build -f infrastructure/docker/backup.Dockerfile -t fee-platform-backup:ci .
+
+      - name: Verify rendered database target and credential boundaries
+        run: npm run test:compose-target
+
+      - name: Provision least-privilege CI database roles
+        run: npm run db:roles
+
+      - name: Verify provisioned PostgreSQL 17 role boundaries
+        env:
+          DATABASE_TARGET_HOST: localhost
+          DATABASE_TARGET_PORT: 5432
+          DATABASE_TARGET_NAME: feeplatform_ci
+          DATABASE_TARGET_SCHEMA: public
+          POSTGRES_USER: feepostgres
+          POSTGRES_PASSWORD: feepostgres
+          MIGRATION_DATABASE_URL: postgresql://fee_migrator:fee-migrator-ci-secret@localhost:5432/feeplatform_ci?schema=public
+          MIGRATION_DATABASE_ROLE: fee_migrator
+          MIGRATION_DATABASE_PASSWORD_URI_ENCODED: fee-migrator-ci-secret
+          RUNTIME_DATABASE_ROLE: fee_runtime
+          RUNTIME_DATABASE_PASSWORD_URI_ENCODED: fee-runtime-ci-secret
+          BACKUP_DATABASE_ROLE: fee_backup
+          BACKUP_DATABASE_PASSWORD: fee-backup-ci-secret
+        run: npm run test:database-roles:db
+
+      - name: Validate the Prisma schema
+        run: npx prisma validate
+
+      - name: Generate the Prisma client
+        run: npm run db:generate
+
+      - name: Apply migrations to the CI database
+        # Proves the migration history actually produces the schema the client
+        # expects, rather than only that `prisma validate` is happy.
+        env:
+          MIGRATION_DATABASE_URL: postgresql://fee_migrator:fee-migrator-ci-secret@localhost:5432/feeplatform_ci?schema=public
+          MIGRATION_DATABASE_ROLE: fee_migrator
+          RUNTIME_DATABASE_ROLE: fee_runtime
+          BACKUP_DATABASE_ROLE: fee_backup
+        run: npm run db:deploy
+
+      - name: Verify tenant relation preflight against PostgreSQL
+        env:
+          TENANT_PREFLIGHT_TEST_DATABASE_URL: postgresql://feepostgres:feepostgres@localhost:5432/feeplatform_ci
+        run: npm run test:tenant-preflight:db
+
+      - name: Verify composite tenant foreign keys against PostgreSQL 17
+        env:
+          COMPOSITE_TENANT_FK_TEST_DATABASE_URL: postgresql://feepostgres:feepostgres@localhost:5432/feeplatform_ci
+        run: npm run test:tenant-constraints:db
+
+      - name: Verify guardian identity upgrade preflight against PostgreSQL 17
+        env:
+          PAYER_GUARDIAN_PREFLIGHT_TEST_DATABASE_URL: postgresql://feepostgres:feepostgres@localhost:5432/feeplatform_ci
+        run: npm run test:payer-guardian-preflight:db
+
+      - name: Verify migration-role guards against PostgreSQL 17
+        env:
+          MIGRATION_DATABASE_URL: postgresql://fee_migrator:fee-migrator-ci-secret@localhost:5432/feeplatform_ci?schema=public
+          MIGRATION_DATABASE_ROLE: fee_migrator
+          RUNTIME_DATABASE_ROLE: fee_runtime
+          BACKUP_DATABASE_ROLE: fee_backup
+          MIGRATION_ROLE_TEST_ADMIN_URL: postgresql://feepostgres:feepostgres@localhost:5432/feeplatform_ci
+        run: npm run test:migration-roles:db
+
+      - name: Verify staged migration replay is idempotent
+        env:
+          MIGRATION_DATABASE_URL: postgresql://fee_migrator:fee-migrator-ci-secret@localhost:5432/feeplatform_ci?schema=public
+          MIGRATION_DATABASE_ROLE: fee_migrator
+          RUNTIME_DATABASE_ROLE: fee_runtime
+          BACKUP_DATABASE_ROLE: fee_backup
+        run: npm run db:deploy
+
+      - name: Verify read-only backup credentials can produce a libpq dump
+        env:
+          PGPASSWORD: fee-backup-ci-secret
+        run: >-
+          docker run --rm --network host -e PGPASSWORD postgres:17-alpine
+          pg_dump --no-password --host=127.0.0.1 --port=5432
+          --username=fee_backup --dbname=feeplatform_ci
+          --format=custom --file=/dev/null
+
+      - name: Verify encrypted backup rejects post-sync large objects safely
+        env:
+          DATABASE_TARGET_HOST: localhost
+          DATABASE_TARGET_PORT: 5432
+          DATABASE_TARGET_NAME: feeplatform_ci
+          POSTGRES_USER: feepostgres
+          POSTGRES_PASSWORD: feepostgres
+          BACKUP_DATABASE_ROLE: fee_backup
+          BACKUP_DATABASE_PASSWORD: fee-backup-ci-secret
+        run: npm run test:backup:large-object:db
+
+      - name: Verify restartable index stages against PostgreSQL 17
+        env:
+          SCHEMA_INDEX_TEST_DATABASE_URL: postgresql://feepostgres:feepostgres@localhost:5432/feeplatform_ci
+        run: npm run test:schema-index:db
+
+      - name: Verify the migration has no float or double columns
+        # Money must be exact. A `double precision` column anywhere in the schema is
+        # a rounding bug waiting for a large invoice.
+        run: |
+          if grep -Ein '\b(double precision|real|float[48]?)\b' prisma/migrations/*/migration.sql; then
+            echo "::error::A floating-point column was found in the migration. Monetary values must use DECIMAL."
+            exit 1
+          fi
+          echo "No floating-point columns found."
+
+      - name: Build every workspace
+        run: npm run build
+
+      - name: Typecheck every workspace
+        run: npm run typecheck
+
+      - name: Run the test suite
+        env:
+          DATABASE_URL: postgresql://fee_runtime:fee-runtime-ci-secret@localhost:5432/feeplatform_ci?schema=public
+        run: npm test
+
+  containers:
+    name: Build container images
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/docker/api.Dockerfile
+          build-args: APP=api
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build the worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/docker/api.Dockerfile
+          build-args: APP=worker
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build the web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/docker/web.Dockerfile
+          build-args: NEXT_PUBLIC_PLATFORM_SUBDOMAIN=${{ vars.PLATFORM_SUBDOMAIN || 'platform' }}
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

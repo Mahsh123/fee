@@ -1,0 +1,217 @@
+# Local application stack. PostgreSQL is managed in Neon; Redis remains local.
+#
+# Configure the runtime URL in .env.neon.local, then run:
+#   npm run docker:up
+# Open platform administration at http://platform.localhost:8080 and tenant
+# workspaces at http://<slug>.localhost:8080 so Nginx preserves each host.
+#
+# Apply staged schema migrations separately before `npm run docker:up`. This
+# file never creates, resets, or migrates a database automatically.
+
+name: fee-platform
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: fee-redis
+    restart: unless-stopped
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    command:
+      - redis-server
+      - --appendonly
+      - 'no'
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  development-seed:
+    image: fee-platform/backend:local
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+      target: runtime
+    container_name: fee-development-seed
+    restart: 'no'
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the fee_runtime Neon pooled URL}
+      SEED_DEVELOPMENT_TENANTS: 'true'
+      SEED_DEMO_EMAIL: ${SEED_DEMO_EMAIL:-admin@demo-academy.test}
+      SEED_SCHOOL_EMAIL: ${SEED_SCHOOL_EMAIL:-admin@northstar.test}
+      SEED_ACADEMY_EMAIL: ${SEED_ACADEMY_EMAIL:-admin@greenfield-academy.test}
+      SEED_GYM_EMAIL: ${SEED_GYM_EMAIL:-manager@northstar-fitness.test}
+      SEED_DEMO_PASSWORD: ${SEED_DEMO_PASSWORD:-}
+    command: ['node', 'node_modules/tsx/dist/cli.mjs', 'scripts/seed-development-tenants.ts']
+
+  api:
+    image: fee-platform/backend:local
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+      target: runtime
+    container_name: fee-api
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      API_PORT: 4000
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the fee_runtime Neon pooled URL}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set}
+      AUDIT_SIGNING_KEYS_JSON: ${AUDIT_SIGNING_KEYS_JSON:-}
+      AUDIT_ACTIVE_SIGNING_KEY_VERSION: ${AUDIT_ACTIVE_SIGNING_KEY_VERSION:-1}
+      AUDIT_ENVELOPE_MAX_LIFETIME_MS: ${AUDIT_ENVELOPE_MAX_LIFETIME_MS:-30000}
+      AUDIT_ENVELOPE_CLOCK_SKEW_MS: ${AUDIT_ENVELOPE_CLOCK_SKEW_MS:-5000}
+      NOTIFICATION_WORKER_HMAC_SECRET: ${NOTIFICATION_WORKER_HMAC_SECRET:?NOTIFICATION_WORKER_HMAC_SECRET must be set}
+      QUEUE_PREFIX: ${QUEUE_PREFIX:-fee}
+      QUEUE_MAX_ATTEMPTS: ${QUEUE_MAX_ATTEMPTS:-5}
+      QUEUE_BACKOFF_MS: ${QUEUE_BACKOFF_MS:-2000}
+      GATEWAY_STATUS_POLL_INTERVAL_MS: ${GATEWAY_STATUS_POLL_INTERVAL_MS:-60000}
+      GATEWAY_STATUS_MAX_AUTO_ATTEMPTS: ${GATEWAY_STATUS_MAX_AUTO_ATTEMPTS:-8}
+      GATEWAY_STATUS_RETRY_INITIAL_MS: ${GATEWAY_STATUS_RETRY_INITIAL_MS:-300000}
+      GATEWAY_STATUS_RETRY_MAX_MS: ${GATEWAY_STATUS_RETRY_MAX_MS:-21600000}
+      GATEWAY_STATUS_LEASE_MS: ${GATEWAY_STATUS_LEASE_MS:-90000}
+      PLATFORM_SUBSCRIPTION_LIFECYCLE_POLL_INTERVAL_MS: ${PLATFORM_SUBSCRIPTION_LIFECYCLE_POLL_INTERVAL_MS:-60000}
+      PLATFORM_INVOICE_DUE_DAYS: ${PLATFORM_INVOICE_DUE_DAYS:-30}
+      PLATFORM_BILLING_GRACE_DAYS: ${PLATFORM_BILLING_GRACE_DAYS:-7}
+      PLATFORM_SUBDOMAIN: ${PLATFORM_SUBDOMAIN:-platform}
+      CORS_ORIGINS: http://${PLATFORM_SUBDOMAIN:-platform}.localhost:${NGINX_HTTP_PORT:-8080}
+      WEB_APP_URL: http://${PLATFORM_SUBDOMAIN:-platform}.localhost:${NGINX_HTTP_PORT:-8080}
+      TENANT_BASE_DOMAIN: localhost
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_PRETTY: 'true'
+    expose:
+      - '4000'
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:4000/health/ready',r=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>{try{process.exit(r.statusCode===200&&JSON.parse(b).data.status==='ready'?0:1)}catch{process.exit(1)}})}).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  worker:
+    image: fee-platform/backend:local
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+      target: runtime
+    container_name: fee-worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      APP: worker
+      NODE_ENV: development
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      REDIS_URL: redis://redis:6379
+      QUEUE_PREFIX: ${QUEUE_PREFIX:-fee}
+      QUEUE_MAX_ATTEMPTS: ${QUEUE_MAX_ATTEMPTS:-5}
+      QUEUE_BACKOFF_MS: ${QUEUE_BACKOFF_MS:-2000}
+      NOTIFICATION_CALLBACK_URL: http://api:4000/${API_GLOBAL_PREFIX:-api}/${API_VERSION:-v1}/internal/notifications/delivery-result
+      NOTIFICATION_WORKER_HMAC_SECRET: ${NOTIFICATION_WORKER_HMAC_SECRET:?NOTIFICATION_WORKER_HMAC_SECRET must be set}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web.Dockerfile
+      target: development
+    container_name: fee-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_BASE_URL: http://${PLATFORM_SUBDOMAIN:-platform}.localhost:${NGINX_HTTP_PORT:-8080}/api/v1
+      NEXT_PUBLIC_PLATFORM_SUBDOMAIN: ${PLATFORM_SUBDOMAIN:-platform}
+    expose:
+      - '3000'
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode>=200&&r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    develop:
+      watch:
+        - action: sync
+          path: ./apps/web/src
+          target: /app/apps/web/src
+        - action: sync
+          path: ./apps/web/public
+          target: /app/apps/web/public
+        - action: sync
+          path: ./packages/ui/src
+          target: /app/packages/ui/src
+        - action: sync
+          path: ./packages/types/src
+          target: /app/packages/types/src
+        - action: sync
+          path: ./packages/money/src
+          target: /app/packages/money/src
+        - action: sync
+          path: ./packages/dates/src
+          target: /app/packages/dates/src
+        - action: sync
+          path: ./packages/validation/src
+          target: /app/packages/validation/src
+        - action: rebuild
+          path: ./package-lock.json
+        - action: rebuild
+          path: ./apps/web/package.json
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: fee-nginx
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+        restart: true
+      web:
+        condition: service_healthy
+        restart: true
+      development-seed:
+        condition: service_completed_successfully
+    ports:
+      - '${NGINX_HTTP_PORT:-8080}:80'
+    volumes:
+      - ./infrastructure/nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget --quiet --tries=1 --spider http://127.0.0.1/healthz && wget --quiet --tries=1 --spider --header='Host: platform.localhost' http://127.0.0.1/ && wget --quiet --tries=1 --spider --header='Host: platform.localhost' http://127.0.0.1/api/v1/tenant-context"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s

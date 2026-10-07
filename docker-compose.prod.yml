@@ -1,0 +1,294 @@
+# =====================================================================================
+# Production stack
+# =====================================================================================
+#
+#   npm run deploy:production -- --env-file .env.production
+#
+# Differences from the development stack, and why:
+#
+#   * Neon owns the database; only the proxy is reachable from the host.
+#   * Every service has a resource limit, so one runaway report cannot starve the
+#     payment path.
+#   * TLS is terminated at the proxy with certificates mounted read-only.
+#   * The API and worker run as separate replicas of the same image.
+#   * Backups run as a scheduled sidecar, because a financial system without tested
+#     restores is one incident away from being unable to explain itself.
+#
+# Secrets come from the environment file and are never baked into an image.
+# Neon roles and grants are provisioned and verified before deployment. The
+# migration job uses a direct endpoint; API replicas use only the pooled runtime URL.
+# =====================================================================================
+
+name: fee-platform-prod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '20m'
+    max-file: '5'
+
+x-api-environment: &api-environment
+  NODE_ENV: production
+  API_PORT: 4000
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be the fee_runtime Neon pooled URL}
+  TENANT_BASE_DOMAIN: ${TENANT_BASE_DOMAIN:?TENANT_BASE_DOMAIN must be provided, for example example.com}
+  PLATFORM_SUBDOMAIN: ${PLATFORM_SUBDOMAIN:-platform}
+  WEB_APP_URL: ${WEB_APP_URL:?WEB_APP_URL must be provided, for example https://platform.example.com}
+  REDIS_URL: ${REDIS_URL:?REDIS_URL must be provided}
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be provided}
+  JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be provided}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY must be provided}
+  AUDIT_SIGNING_KEYS_JSON: ${AUDIT_SIGNING_KEYS_JSON:-}
+  AUDIT_ACTIVE_SIGNING_KEY_VERSION: ${AUDIT_ACTIVE_SIGNING_KEY_VERSION:-1}
+  AUDIT_ENVELOPE_MAX_LIFETIME_MS: ${AUDIT_ENVELOPE_MAX_LIFETIME_MS:-30000}
+  AUDIT_ENVELOPE_CLOCK_SKEW_MS: ${AUDIT_ENVELOPE_CLOCK_SKEW_MS:-5000}
+  NOTIFICATION_WORKER_HMAC_SECRET: ${NOTIFICATION_WORKER_HMAC_SECRET:?NOTIFICATION_WORKER_HMAC_SECRET must be provided}
+  QUEUE_PREFIX: ${QUEUE_PREFIX:-fee}
+  QUEUE_MAX_ATTEMPTS: ${QUEUE_MAX_ATTEMPTS:-5}
+  QUEUE_BACKOFF_MS: ${QUEUE_BACKOFF_MS:-2000}
+  GATEWAY_STATUS_POLL_INTERVAL_MS: ${GATEWAY_STATUS_POLL_INTERVAL_MS:-60000}
+  GATEWAY_STATUS_MAX_AUTO_ATTEMPTS: ${GATEWAY_STATUS_MAX_AUTO_ATTEMPTS:-8}
+  GATEWAY_STATUS_RETRY_INITIAL_MS: ${GATEWAY_STATUS_RETRY_INITIAL_MS:-300000}
+  GATEWAY_STATUS_RETRY_MAX_MS: ${GATEWAY_STATUS_RETRY_MAX_MS:-21600000}
+  GATEWAY_STATUS_LEASE_MS: ${GATEWAY_STATUS_LEASE_MS:-90000}
+  PLATFORM_SUBSCRIPTION_LIFECYCLE_POLL_INTERVAL_MS: ${PLATFORM_SUBSCRIPTION_LIFECYCLE_POLL_INTERVAL_MS:-60000}
+  PLATFORM_INVOICE_DUE_DAYS: ${PLATFORM_INVOICE_DUE_DAYS:-30}
+  PLATFORM_BILLING_GRACE_DAYS: ${PLATFORM_BILLING_GRACE_DAYS:-7}
+  JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-900}
+  JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-2592000}
+  CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS must be provided}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  LOG_PRETTY: 'false'
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  S3_ENDPOINT: ${S3_ENDPOINT:-}
+  S3_BUCKET: ${S3_BUCKET:-fee-platform-documents}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: always
+    logging: *default-logging
+    command:
+      - redis-server
+      - --appendonly
+      - 'yes'
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 768M
+
+  migration:
+    image: ${MIGRATION_IMAGE:?MIGRATION_IMAGE must be the full-tooling one-shot operations image}
+    restart: 'no'
+    logging: *default-logging
+    environment:
+      NODE_ENV: production
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?MIGRATION_DATABASE_URL must be the fee_migrator Neon direct URL}
+      MIGRATION_DATABASE_ROLE: ${MIGRATION_DATABASE_ROLE:?MIGRATION_DATABASE_ROLE must be provided}
+      RUNTIME_DATABASE_ROLE: ${RUNTIME_DATABASE_ROLE:?RUNTIME_DATABASE_ROLE must be provided}
+      BACKUP_DATABASE_ROLE: ${BACKUP_DATABASE_ROLE:?BACKUP_DATABASE_ROLE must be provided}
+      DATABASE_TARGET_HOST: ${DATABASE_TARGET_HOST:?DATABASE_TARGET_HOST must be provided}
+      DATABASE_TARGET_PORT: ${DATABASE_TARGET_PORT:?DATABASE_TARGET_PORT must be provided}
+      DATABASE_TARGET_NAME: ${DATABASE_TARGET_NAME:?DATABASE_TARGET_NAME must be provided}
+      DATABASE_TARGET_SCHEMA: ${DATABASE_TARGET_SCHEMA:-public}
+      AUDIT_ACTIVE_SIGNING_KEY_VERSION: ${AUDIT_ACTIVE_SIGNING_KEY_VERSION:-1}
+      AUDIT_SIGNING_KEYS_JSON: ${AUDIT_SIGNING_KEYS_JSON:-}
+    command: ['node', 'scripts/deploy-staged-migrations.mjs']
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  platform-bootstrap:
+    image: ${MIGRATION_IMAGE:?MIGRATION_IMAGE must be the full-tooling one-shot operations image}
+    restart: 'no'
+    logging: *default-logging
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      PLATFORM_BOOTSTRAP_DATABASE_URL: ${PLATFORM_BOOTSTRAP_DATABASE_URL:?PLATFORM_BOOTSTRAP_DATABASE_URL must be a one-shot Neon owner URL}
+      SEED_PLATFORM_ADMIN_EMAIL: ${SEED_PLATFORM_ADMIN_EMAIL:-}
+      SEED_PLATFORM_ADMIN_PASSWORD: ${SEED_PLATFORM_ADMIN_PASSWORD:-}
+    command: ['npm', 'run', 'db:seed']
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  api:
+    image: ${API_IMAGE:-fee-platform/api:latest}
+    restart: always
+    logging: *default-logging
+    depends_on:
+      redis:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+      platform-bootstrap:
+        condition: service_completed_successfully
+    environment: *api-environment
+    expose:
+      - '4000'
+    command: ['node', 'apps/api/dist/main.js']
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:4000/health/ready',r=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>{try{process.exit(r.statusCode===200&&JSON.parse(b).data.status==='ready'?0:1)}catch{process.exit(1)}})}).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      replicas: ${API_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1G
+      update_config:
+        # One at a time: a rolling restart of every instance would leave no process
+        # available to receive webhooks, and providers do not retry forever.
+        order: start-first
+        parallelism: 1
+        delay: 15s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+
+  worker:
+    image: ${WORKER_IMAGE:-fee-platform/worker:latest}
+    restart: always
+    logging: *default-logging
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      REDIS_URL: ${REDIS_URL:?REDIS_URL must be provided}
+      QUEUE_PREFIX: ${QUEUE_PREFIX:-fee}
+      QUEUE_MAX_ATTEMPTS: ${QUEUE_MAX_ATTEMPTS:-5}
+      QUEUE_BACKOFF_MS: ${QUEUE_BACKOFF_MS:-2000}
+      NOTIFICATION_CALLBACK_URL: http://api:4000/${API_GLOBAL_PREFIX:-api}/${API_VERSION:-v1}/internal/notifications/delivery-result
+      NOTIFICATION_WORKER_HMAC_SECRET: ${NOTIFICATION_WORKER_HMAC_SECRET:?NOTIFICATION_WORKER_HMAC_SECRET must be provided}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+
+  web:
+    image: ${WEB_IMAGE:-fee-platform/web:latest}
+    restart: always
+    logging: *default-logging
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-}
+      NEXT_PUBLIC_PLATFORM_SUBDOMAIN: ${PLATFORM_SUBDOMAIN:-platform}
+    expose:
+      - '3000'
+    deploy:
+      replicas: ${WEB_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 768M
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: always
+    logging: *default-logging
+    depends_on:
+      api:
+        condition: service_started
+        restart: true
+      web:
+        condition: service_started
+        restart: true
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/certs:/etc/nginx/certs:ro
+      - ./infrastructure/nginx/certbot-www:/var/www/certbot:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # Additional encrypted logical backup. Neon PITR remains the provider recovery
+  # layer; this sidecar uses the separate read-only fee_backup login.
+  backup:
+    image: ${BACKUP_IMAGE:-fee-platform/backup:latest}
+    user: postgres
+    build:
+      context: .
+      dockerfile: infrastructure/docker/backup.Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: ${DATABASE_TARGET_HOST:?DATABASE_TARGET_HOST must be provided}
+      PGPORT: ${DATABASE_TARGET_PORT:?DATABASE_TARGET_PORT must be provided}
+      PGUSER: ${BACKUP_DATABASE_ROLE:?BACKUP_DATABASE_ROLE must be provided}
+      PGPASSWORD: ${BACKUP_DATABASE_PASSWORD:?BACKUP_DATABASE_PASSWORD must be provided}
+      PGDATABASE: ${DATABASE_TARGET_NAME:?DATABASE_TARGET_NAME must be provided}
+      PGSSLMODE: verify-full
+      PGCHANNELBINDING: require
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?BACKUP_AGE_RECIPIENT must be provided}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - backups:/backups
+    entrypoint: ['/usr/local/bin/backup-encrypted.sh']
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+volumes:
+  redis-data:
+  backups:

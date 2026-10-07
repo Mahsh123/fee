@@ -1,0 +1,47 @@
+# Provider order expiry and late capture
+
+**Status:** In progress; manual provider verification is implemented, while automation, unsupported-provider resolution, incompatible-currency resolution, and QA/reviews remain open.
+
+## Issue
+
+The gateway contract now exposes an order-closure result that distinguishes captured, pending, terminal, and unknown states. A tenant-scoped finance endpoint checks an overdue order with the provider, appends audit evidence, and routes verified captures through the same payment, receipt, and ledger posting function used by webhooks. The Payments screen exposes this action to users with `payment.verify`. There is no scheduled worker yet. PayU's `verify_payment` API can confirm a capture, but a failed attempt does not prove that PayU will reject a later retry; unsuccessful and unknown results therefore remain reserved. MOCK cannot prove provider state because the test adapter does not persist API-created orders. API reads leave overdue intents in their current status, and payment reservations remain active until provider-confirmed terminal state or recorded capture. Same-currency late, failed-state, amount-mismatched, and unsafe-to-allocate captures are persisted as a confirmed `Payment`, receipt, balanced liability posting, and reconciliation item. A local deadline, failed attempt, or local `EXPIRED`/`FAILED`/`CANCELLED` state alone cannot establish that the provider stopped accepting money.
+
+Same-currency late, failed-state, amount-mismatched, and unsafe-to-allocate captures now create an immutable payment, receipt, balanced ledger posting to `UNAPPLIED_GATEWAY_RECEIPTS`, and linked open reconciliation record. A finance operator can transfer this liability into a student credit through a reasoned, audited action, after which the existing credit application flow can allocate it. Reconciliation refuses closure while the payment-linked gateway liability remains. Captures with missing/invalid amounts or incompatible currency remain open evidence-only records; using the order amount or converting currencies without an approved rate would fabricate financial facts. Ledger postings now persist the business currency explicitly (from the financial event or tenant setting), avoiding the schema's former implicit INR default. Ledger posting and balance reads now fail closed if neither an explicit currency nor configured tenant currency exists; they never infer INR for a tenant with missing configuration. The payer-guardian preflight can inspect only persisted state. It currently blocks locally nonterminal legacy parent/guardian orders regardless of `expiresAt`; it cannot prove external closure for locally terminal orders. A release containing such legacy orders must not treat local expiry as provider closure.
+
+## Proposed implementation
+
+1. Extend the gateway contract with an order-closure result distinguishing pending, captured, terminal/closed, and unknown states. A timeout or ambiguous response remains unresolved; it is never interpreted as closed. **Implemented for current provider adapters.**
+2. Preserve status verification evidence with tenant, provider/environment, gateway transaction/order, checked time, external status, actor, result, and request context. **Manual check details are written to the tenant audit log; a separate evidence table is not added.**
+3. Expose an authorized provider check for overdue orders. **Implemented as a finance endpoint and Payments UI action.** Pending/unknown results retain reservations; only explicit terminal results release them. **A scheduled worker and a provider-neutral operator resolution workflow remain open.**
+4. Process a verified capture idempotently through the existing webhook payment/receipt/ledger posting function. **Implemented.** Same-currency late/discrepant captures are held as unapplied liability; missing/invalid amount and incompatible currency remain open evidence-only cases.
+5. Make the guardian identity preflight require either resolved stable payer identity for a still-collectible order or provider-verified terminal evidence for an order that cannot capture. Review the preflight and migration behavior during the deferred security and tenant-isolation review; local timestamps and local terminal statuses alone are insufficient evidence.
+
+This instantiates the provider status method already specified by the architecture. It does not split the modular monolith or change the payment and fee domains. The status-check route retrieves tenant credentials by the transaction's tenant-scoped gateway configuration, never from a provider response or client-supplied tenant identifier.
+
+## Provider capability evidence
+
+- Stripe Checkout Sessions can be expired only while `open`; the returned `expired` state prevents further checkout processing. The current application creates Checkout Sessions for Stripe, so the adapter must expire the Session rather than cancel a related PaymentIntent. See the [Stripe expire-session API](https://docs.stripe.com/api/checkout/sessions/expire) and [Checkout Session status contract](https://docs.stripe.com/api/checkout/sessions).
+- Razorpay's [Fetch Order API](https://razorpay.com/docs/api/orders/fetch-with-id/) documents `created`, `attempted`, and `paid`. `created` and `attempted` do not prove closure, so those results remain reserved. The adapter also fetches the order's payment collection and records the actual captured payment ID/amount; multiple captured payments are treated as unknown for manual reconciliation instead of choosing one arbitrarily. See Razorpay's [fetch-payments-for-an-order API](https://github.com/razorpay/razorpay-node/blob/master/documents/order.md).
+- Cashfree's [Checkout developer flow](https://www.cashfree.com/devstudio/preview/pg/web/checkout) documents fetching all payments for an order at `/pg/orders/{order_id}/payments` and distinguishes successful, pending (including late authorization), and failed attempts. The adapter only treats a successful payment as captured; pending attempts prevent expiry, and unknown provider states do not release the reservation.
+- PayU's [Verify Payment API](https://docs.payu.in/reference/verify_payment_api) accepts a merchant transaction ID and returns transaction status and amount; its request uses the documented [hashing scheme](https://docs.payu.in/docs/hashing-request-and-response). A `success` result can establish capture. `failure`, `pending`, a missing transaction, or an unrecognized response does not establish terminal checkout closure and keeps the reservation held.
+- Stripe Checkout Sessions expose `open`, `complete`, and `expired`; an open session is explicitly expired and then reread. A completed but unpaid session remains pending. See the [Stripe expire-session API](https://docs.stripe.com/api/checkout/sessions/expire) and [Checkout Session status contract](https://docs.stripe.com/api/checkout/sessions).
+
+## Impact
+
+- **Financial:** late captures gain a confirmed payment and ledger representation; ambiguous captures remain visible as a liability and reconciliation case.
+- **Data:** provider status checks are append-only audit entries, and reconciliation keeps `actualCurrency` separately. Existing payment/order rows and issued demand snapshots are not rewritten.
+- **Migration:** add `CreditSource.GATEWAY_UNAPPLIED` and nullable `ReconciliationRecord.actualCurrency` additively so finance can distinguish captured event currency and transfer a held capture into the existing credit application lifecycle. Existing rows are unchanged; rollback must preserve the enum value while any credit uses it.
+- **Operations:** provider checks add bounded network calls, retries, rate limits, and review states. Provider unavailability delays expiry instead of freeing a possibly payable balance.
+- **Security:** status requests use tenant-scoped gateway configuration and encrypted credentials; provider responses cannot select a tenant. Cross-tenant integration tests must cover order lookup and evidence persistence.
+- **Migration:** introduce the evidence schema additively before enforcing the upgraded preflight. For legacy orders, verify state and captures against each provider before cutover; retain signed/verified evidence and remediation audit. Do not infer parent/guardian identities from payer names.
+
+## Acceptance criteria for closure
+
+- The adapters expose a typed status result distinguishing pending, captured, failed, terminal/closed, and unknown states. Implemented; provider contract tests remain pending.
+- Provider timeouts, duplicate status responses, stale responses, and late success are covered by unit, integration, and provider-contract tests.
+- A provider-verified capture posts payment and balanced ledger evidence exactly once, including after local expiry.
+- Same-currency late and discrepant captures are held in unapplied gateway liability without altering demand balances; invalid/missing amounts and incompatible currency remain visible and cannot be silently resolved.
+- An operator release to student credit transfers the liability with balanced, immutable ledger entries; tenant isolation, authorization, and release reason are audited.
+- Expiration does not release reservations while provider state is pending or unknown. Implemented in the manual-check path; automated checks remain open.
+- Tenant isolation, authorization, secrets handling, audit history, and migration preflight are independently reviewed.
+- The upgrade runbook describes provider verification and rollback/cutover behavior.

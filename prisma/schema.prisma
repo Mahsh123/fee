@@ -1,0 +1,4175 @@
+// =====================================================================================
+// Fee Platform - Domain Schema
+// =====================================================================================
+//
+// Design rules encoded in this schema:
+//
+//   1. Every tenant-owned table carries `tenantId` and a real foreign key to Tenant.
+//   2. Money is NEVER a float. All monetary columns are `Decimal @db.Decimal(18,4)`.
+//      Four decimal places let the engine hold exact intermediate values for
+//      percentage rules; presentation rounding happens at the edge.
+//   3. The financial lifecycle is stored as separate concepts and is never merged:
+//         FeeType -> FeeStructure -> FeePolicy -> FeeAssignment -> FeeDemand
+//         FeeDemand -> PaymentOrder -> Payment -> PaymentAllocation -> Ledger -> Receipt
+//   4. Issued financial records are immutable. Corrections happen through
+//      Refund / Adjustment / Credit / Reversal rows, never by editing history.
+//   5. Tamper-evidence: uniques on (tenantId, receiptNumber), (tenantId, invoiceNumber),
+//      (tenantId, provider, environment, externalEventId) for signature-verified
+//      webhooks and (tenantId, provider, providerTxnId) make duplicate receipts and
+//      gateway postings impossible at the database level.
+//   6. Configurable objects use `active` / archival instead of hard delete. Financial
+//      rows are never soft-deleted.
+// =====================================================================================
+
+generator client {
+  provider        = "prisma-client"
+  output          = "../packages/database/src/generated"
+  previewFeatures = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =====================================================================================
+// ENUMERATIONS
+// =====================================================================================
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+enum BranchStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+  MANUAL
+}
+
+enum AssignmentStatus {
+  ASSIGNED
+  STARTED
+  IN_PROGRESS
+  COMPLETED
+  OVERDUE
+  CANCELLED
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+enum FeeCategoryKind {
+  ACADEMIC
+  ADMISSION
+  EXAMINATION
+  TRANSPORT
+  HOSTEL
+  LIBRARY
+  LABORATORY
+  ACTIVITIES
+  ADMINISTRATIVE
+  OTHER
+}
+
+enum FeeCalculationMethod {
+  FIXED
+  PERCENTAGE
+  QUANTITY
+  USAGE
+  FORMULA
+  CUSTOM
+}
+
+enum FeeFrequency {
+  ONE_TIME
+  MONTHLY
+  QUARTERLY
+  HALF_YEARLY
+  ANNUAL
+  TERM
+  SEMESTER
+  CUSTOM_DATE
+  EVENT_BASED
+}
+
+enum FeeOptionality {
+  MANDATORY
+  OPTIONAL
+  CONDITIONAL
+}
+
+enum VersionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  RETIRED
+  ARCHIVED
+}
+
+enum PolicyType {
+  ELIGIBILITY
+  SCHOLARSHIP
+  DISCOUNT
+  CONCESSION
+  WAIVER
+  EXEMPTION
+  SURCHARGE
+  OVERRIDE
+  LATE_FEE
+  EARLY_PAYMENT_DISCOUNT
+  INSTALLMENT_RULE
+}
+
+enum StackingMode {
+  STACKABLE
+  NON_STACKABLE
+  EXCLUSIVE
+  HIGHEST_BENEFIT
+  PRIORITY_ONLY
+}
+
+enum ConditionOperator {
+  EQ
+  NEQ
+  GT
+  GTE
+  LT
+  LTE
+  IN
+  NOT_IN
+  CONTAINS
+  BETWEEN
+  EXISTS
+}
+
+enum LogicalOperator {
+  AND
+  OR
+}
+
+enum ActionKind {
+  ADD_FIXED_AMOUNT
+  ADD_PERCENTAGE
+  DISCOUNT_FIXED
+  DISCOUNT_PERCENTAGE
+  WAIVE_FULL
+  WAIVE_PARTIAL
+  EXEMPT
+  OVERRIDE_AMOUNT
+  SET_DUE_DATE
+  ADD_LATE_FEE
+  REMOVE_LATE_FEE
+  CAP_AMOUNT
+  SET_MINIMUM_AMOUNT
+  SET_MAXIMUM_AMOUNT
+}
+
+enum ActionAmountBasis {
+  BASE_AMOUNT
+  RUNNING_TOTAL
+  FEE_ITEM
+}
+
+enum ScholarshipKind {
+  FULL
+  PERCENTAGE
+  FIXED_AMOUNT
+  FEE_SPECIFIC
+  TERM_SPECIFIC
+  YEAR_SPECIFIC
+}
+
+enum AssignmentTargetType {
+  STUDENT
+  CLASS
+  SECTION
+  BATCH
+  COURSE
+  DEPARTMENT
+  PROGRAM
+  HOSTEL
+  TRANSPORT_ROUTE
+  CUSTOM_GROUP
+}
+
+enum DemandStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  WAIVED
+  CANCELLED
+  CREDITED
+}
+
+enum DemandItemStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  WAIVED
+  CANCELLED
+}
+
+enum AdjustmentDirection {
+  DEBIT
+  CREDIT
+}
+
+enum InstallmentStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentStatus {
+  CREATED
+  INITIATED
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  CANCELLED
+  EXPIRED
+  REFUND_PENDING
+  PARTIALLY_REFUNDED
+  REFUNDED
+}
+
+enum PaymentChannel {
+  ONLINE
+  MANUAL
+  SPONSOR
+  ADVANCE
+  ADMISSION
+}
+
+enum PaymentMethodKind {
+  CASH
+  UPI_MANUAL
+  BANK_TRANSFER
+  CHEQUE
+  DD
+  CARD_OFFLINE
+  UPI
+  CARD
+  NETBANKING
+  WALLET
+  INTERNATIONAL_CARD
+  OTHER
+}
+
+enum PayerType {
+  STUDENT
+  PARENT
+  GUARDIAN
+  SPONSOR
+  GOVERNMENT
+  SCHOLARSHIP_FUND
+  INSTITUTION
+  THIRD_PARTY
+}
+
+enum PayerResponsibilityBasis {
+  FIXED_PER_FEE_ITEM
+  PERCENTAGE_OF_REMAINDER
+}
+
+enum GatewayProvider {
+  RAZORPAY
+  CASHFREE
+  PAYU
+  STRIPE
+  MOCK
+}
+
+enum GatewayEnvironment {
+  TEST
+  LIVE
+}
+
+enum GatewayTransactionStatus {
+  CREATED
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  CANCELLED
+  EXPIRED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum WebhookProcessingStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  DUPLICATE
+  IGNORED
+  FAILED
+}
+
+enum RefundKind {
+  FULL
+  PARTIAL
+  GATEWAY
+  MANUAL
+}
+
+enum RefundStatus {
+  REQUESTED
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum CreditStatus {
+  AVAILABLE
+  PARTIALLY_ALLOCATED
+  ALLOCATED
+  VOID
+  EXPIRED
+}
+
+enum CreditSource {
+  OVERPAYMENT
+  ADVANCE_PAYMENT
+  REFUND_TO_CREDIT
+  ADJUSTMENT
+  SPONSOR_SURPLUS
+  OPENING_BALANCE
+  GATEWAY_UNAPPLIED
+}
+
+enum AdjustmentKind {
+  DEBIT_ADJUSTMENT
+  CREDIT_ADJUSTMENT
+  WRITE_OFF
+  WAIVER
+  CORRECTION
+  TRANSFER
+}
+
+enum AdjustmentStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  APPLIED
+  REJECTED
+  REVERSED
+}
+
+enum LedgerAccountType {
+  ASSET
+  LIABILITY
+  INCOME
+  EXPENSE
+  EQUITY
+}
+
+enum LedgerSide {
+  DEBIT
+  CREDIT
+}
+
+enum LedgerEntryStatus {
+  POSTED
+  REVERSED
+}
+
+enum ReceiptStatus {
+  GENERATED
+  PDF_PENDING
+  PDF_READY
+  VOID
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum SettlementStatus {
+  IMPORTED
+  PARTIALLY_MATCHED
+  MATCHED
+  MISMATCHED
+  CLOSED
+}
+
+enum ReconciliationStatus {
+  OPEN
+  MATCHED
+  MISMATCHED
+  RESOLVED
+  IGNORED
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  WHATSAPP
+  PUSH
+  IN_APP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  CANCELLED
+}
+
+enum NotificationEvent {
+  USER_INVITATION
+  USER_EMAIL_VERIFICATION
+  PAYMENT_SUCCESS
+  PAYMENT_FAILED
+  PAYMENT_PENDING
+  RECEIPT_GENERATED
+  FEE_DUE
+  FEE_OVERDUE
+  INSTALLMENT_DUE
+  ADMISSION_PAYMENT
+  REFUND
+  SCHOLARSHIP_APPLIED
+}
+
+enum ApprovalActionType {
+  REFUND
+  FEE_WAIVER
+  MANUAL_ADJUSTMENT
+  STUDENT_OVERRIDE
+  SCHOLARSHIP
+  WRITE_OFF
+  FEE_STRUCTURE_CHANGE
+  CREDIT_APPLICATION
+  PAYMENT_COLLECTION
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXECUTED
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum JobKind {
+  REPORT
+  EXPORT
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  FAILED
+}
+
+enum StudentStatus {
+  PROSPECT
+  ACTIVE
+  ON_LEAVE
+  SUSPENDED
+  WITHDRAWN
+  ALUMNI
+}
+
+enum GuardianRelation {
+  FATHER
+  MOTHER
+  GUARDIAN
+  SPONSOR_CONTACT
+  OTHER
+}
+
+enum AdmissionStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  FEES_PENDING
+  CONFIRMED
+  REJECTED
+  CANCELLED
+  ENROLLED
+}
+
+enum LateFeeMode {
+  NONE
+  FLAT
+  PER_DAY
+  PERCENTAGE
+  CUSTOM
+}
+
+enum PartialPaymentPolicy {
+  ALLOW
+  ALLOW_WITH_APPROVAL
+  DISALLOW
+}
+
+enum OverpaymentPolicy {
+  REJECT
+  CREDIT_BALANCE
+  ADVANCE_PAYMENT
+}
+
+enum RoundingMode {
+  HALF_UP
+  HALF_EVEN
+  FLOOR
+  CEIL
+  NONE
+}
+
+enum InstallmentBasis {
+  FIXED_AMOUNT
+  PERCENTAGE
+  CUSTOM_SCHEDULE
+}
+
+enum SequenceKind {
+  RECEIPT
+  INVOICE
+  PAYMENT
+  DEMAND
+  APPLICATION
+  STUDENT
+  REFUND
+  CREDIT_NOTE
+  ADJUSTMENT
+}
+
+enum SchemaIndexBuildState {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum CustomFieldType {
+  STRING
+  NUMBER
+  BOOLEAN
+  DATE
+  ENUM
+}
+
+enum AcademicUnitType {
+  COURSE
+  PROGRAM
+  CLASS
+  SECTION
+  BATCH
+  DEPARTMENT
+  HOSTEL
+  TRANSPORT_ROUTE
+}
+
+// =====================================================================================
+// TENANCY
+// =====================================================================================
+
+model Tenant {
+  id               String       @id @default(uuid()) @db.Uuid
+  slug             String       @unique
+  name             String
+  /// Customer-defined industry/category. Kept as text so tenant types are not constrained to a school-centric enum.
+  organizationType String       @default("ORGANIZATION") @db.VarChar(80)
+  status           TenantStatus @default(TRIAL)
+
+  contactEmail String?
+  contactPhone String?
+  countryCode  String? @db.Char(2)
+
+  trialEndsAt           DateTime?
+  subscriptionPlan      String?            @db.VarChar(80)
+  subscriptionStatus    SubscriptionStatus @default(TRIAL)
+  subscriptionRenewalAt DateTime?
+  /// Effective module keys are snapshotted here for fast public-context/UI rendering; entitlement checks use plan and tenant overrides.
+  enabledModules        String[]           @default([])
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  createdBy             String?            @db.Uuid
+  updatedBy             String?            @db.Uuid
+
+  settings                TenantSettings?
+  branding                TenantBranding?
+  numberingSettings       TenantNumberingSettings?
+  domains                 TenantDomain[]
+  branches                Branch[]
+  organizationUnits       OrganizationUnit[]
+  branchMemberships       UserBranchMembership[]
+  organizationMemberships UserOrganizationMembership[]
+  assignments             UserAssignment[]
+  subscriptions           TenantSubscription[]
+  moduleOverrides         TenantModuleOverride[]
+  entitlementOverrides    TenantEntitlementOverride[]
+  platformInvoices        PlatformInvoice[]
+  platformRefunds         PlatformRefund[]
+  paymentGateways         TenantPaymentGateway[]
+  notificationSettings    TenantNotificationSetting[]
+  provisioningOperations  TenantProvisioningOperation[]
+
+  users                     User[]
+  roles                     Role[]
+  userRoles                 UserRole[]
+  rolePermissions           RolePermission[]
+  refreshTokens             RefreshToken[]
+  academicYears             AcademicYear[]
+  academicUnits             AcademicUnit[]
+  students                  Student[]
+  studentUnitMemberships    StudentUnitMembership[]
+  guardians                 Guardian[]
+  studentGuardians          StudentGuardian[]
+  studentGroups             StudentGroup[]
+  studentGroupMembers       StudentGroupMember[]
+  studentCustomAttributes   StudentCustomAttribute[]
+  admissionApplications     AdmissionApplication[]
+  admissions                Admission[]
+  sponsors                  Sponsor[]
+  payerResponsibilityRules  PayerResponsibilityRule[]
+  feeDemandResponsibilities FeeDemandResponsibility[]
+
+  feeCategories        FeeCategory[]
+  feeTypes             FeeType[]
+  feeTypeVersions      FeeTypeVersion[]
+  feeStructures        FeeStructure[]
+  feeStructureVersions FeeStructureVersion[]
+  feeStructureItems    FeeStructureItem[]
+  installmentRuleItems InstallmentRuleItem[]
+
+  feePolicies         FeePolicy[]
+  feePolicyVersions   FeePolicyVersion[]
+  feePolicyConditions FeePolicyCondition[]
+  feePolicyActions    FeePolicyAction[]
+  feePolicyScopes     FeePolicyScope[]
+
+  scholarships       Scholarship[]
+  discounts          Discount[]
+  concessions        Concession[]
+  waivers            Waiver[]
+  surcharges         Surcharge[]
+  feeOverrides       FeeOverride[]
+  benefitAssignments BenefitAssignment[]
+
+  feeAssignments           FeeAssignment[]
+  feeDemands               FeeDemand[]
+  feeDemandItems           FeeDemandItem[]
+  feeDemandItemAdjustments FeeDemandItemAdjustment[]
+  installments             Installment[]
+  installmentItems         InstallmentItem[]
+  lateFeeAccruals          LateFeeAccrual[]
+
+  paymentOrders       PaymentOrder[]
+  payments            Payment[]
+  paymentAllocations  PaymentAllocation[]
+  paymentMethods      PaymentMethod[]
+  gatewayTransactions GatewayTransaction[]
+  gatewayWebhooks     GatewayWebhook[]
+  idempotencyKeys     IdempotencyKey[]
+
+  refunds           Refund[]
+  refundAllocations RefundAllocation[]
+  credits           Credit[]
+  creditAllocations CreditAllocation[]
+  adjustments       Adjustment[]
+
+  ledgerAccounts LedgerAccount[]
+  ledgerEntries  LedgerEntry[]
+
+  receipts     Receipt[]
+  receiptLines ReceiptLine[]
+  invoices     Invoice[]
+  invoiceLines InvoiceLine[]
+  documents    Document[]
+
+  settlements           Settlement[]
+  reconciliationRecords ReconciliationRecord[]
+
+  notificationTemplates NotificationTemplate[]
+  notifications         Notification[]
+
+  auditLogs          AuditLog[]
+  auditChainHead     AuditChainHead?
+  auditRequestNonces AuditRequestNonce[]
+  reportJobs         ReportJob[]
+  exportJobs         ExportJob[]
+  approvalRequests   ApprovalRequest[]
+  outboxEvents       OutboxEvent[]
+  sequences          Sequence[]
+  platformPayments   PlatformPayment[]
+
+  @@index([status])
+  @@map("tenants")
+}
+
+/// Successful platform tenant-provisioning requests. The row is committed in
+/// the same transaction as the workspace and contains a replayable response,
+/// never the submitted temporary password or its hash.
+model TenantProvisioningOperation {
+  id                 String   @id @default(uuid()) @db.Uuid
+  actorId            String   @db.Uuid
+  idempotencyKey     String   @db.VarChar(200)
+  requestFingerprint String   @db.Char(64)
+  createdTenantId    String?  @db.Uuid
+  createdTenant      Tenant?  @relation(fields: [createdTenantId], references: [id], onDelete: SetNull)
+  result             Json
+  createdAt          DateTime @default(now())
+  completedAt        DateTime @default(now())
+
+  @@unique([actorId, idempotencyKey])
+  @@index([createdTenantId])
+  @@map("platform_tenant_provisioning_operations")
+}
+
+model TenantSettings {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @unique @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  currency           String       @default("INR") @db.Char(3)
+  currencySymbol     String       @default("₹")
+  currencyMinorUnits Int          @default(2)
+  roundingMode       RoundingMode @default(HALF_UP)
+  timezone           String       @default("Asia/Kolkata")
+  locale             String       @default("en-IN")
+  dateFormat         String       @default("dd-MM-yyyy")
+
+  defaultAcademicYearId String? @db.Uuid
+
+  lateFeeMode            LateFeeMode @default(NONE)
+  lateFeeGraceDays       Int         @default(0)
+  lateFeeFlatAmount      Decimal     @default(0) @db.Decimal(18, 4)
+  lateFeePerDay          Decimal     @default(0) @db.Decimal(18, 4)
+  lateFeePercent         Decimal     @default(0) @db.Decimal(9, 6)
+  lateFeeMaxAmount       Decimal?    @db.Decimal(18, 4)
+  lateFeePaymentTermDays Int         @default(0)
+  lateFeeFeeTypeId       String?     @db.Uuid
+  lateFeeFeeType         FeeType?    @relation("TenantLateFeeType", fields: [tenantId, lateFeeFeeTypeId], references: [tenantId, id], onDelete: Restrict)
+
+  partialPaymentPolicy PartialPaymentPolicy @default(ALLOW)
+  overpaymentPolicy    OverpaymentPolicy    @default(CREDIT_BALANCE)
+  allowAdvancePayment  Boolean              @default(false)
+  minimumPartialAmount Decimal?             @db.Decimal(18, 4)
+
+  refundApprovalThreshold     Decimal? @db.Decimal(18, 4)
+  waiverApprovalThreshold     Decimal? @db.Decimal(18, 4)
+  adjustmentApprovalThreshold Decimal? @db.Decimal(18, 4)
+
+  reminderScheduleDays Int[]   @default([7, 3, 0, 1, 7])
+  allowNegativeDemand  Boolean @default(false)
+  allowPublicRegistration Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  updatedBy String?  @db.Uuid
+
+  @@unique([tenantId, id])
+  @@index([tenantId, lateFeeFeeTypeId])
+  @@map("tenant_settings")
+}
+
+model TenantBranding {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @unique @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  organizationName    String
+  /// @deprecated Kept only while older app replicas still write the original column.
+  institutionName     String  @ignore
+  legalName           String?
+  addressLine1        String?
+  addressLine2        String?
+  city                String?
+  state               String?
+  postalCode          String?
+  country             String?
+  phone               String?
+  email               String?
+  website             String?
+  logoDocumentId      String? @db.Uuid
+  logoUrl             String?
+  primaryColor        String  @default("#0F172A")
+  accentColor         String  @default("#2563EB")
+  landingTitle        String?
+  landingDescription  String?
+  landingActionLabel  String?
+  receiptFooter       String?
+  invoiceFooter       String?
+  authorizedSignatory String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@map("tenant_branding")
+}
+
+model TenantDomain {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String    @db.Uuid
+  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  domain            String    @unique
+  isPrimary         Boolean   @default(false)
+  verifiedAt        DateTime?
+  verificationToken String?   @db.VarChar(64)
+  createdAt         DateTime  @default(now())
+
+  @@unique([tenantId, id])
+  @@index([tenantId])
+  @@map("tenant_domains")
+}
+
+/// Generic organization location. School/campus, gym/site, office, club location,
+/// and other labels live in data rather than in platform code.
+model Branch {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  code           String       @db.VarChar(48)
+  name           String       @db.VarChar(160)
+  status         BranchStatus @default(ACTIVE)
+  address        Json?
+  phone          String?
+  email          String?
+  capacity       Int?
+  managerId      String?      @db.Uuid
+  manager        User?        @relation("BranchManager", fields: [tenantId, managerId], references: [tenantId, id], onDelete: NoAction)
+  settings       Json?
+  enabledModules String[]     @default([])
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+
+  memberships     UserBranchMembership[]
+  assignments     UserAssignment[]
+  students        Student[]              @relation("StudentHomeBranch")
+  feeAssignments  FeeAssignment[]        @relation("FeeAssignmentBranch")
+  demands         FeeDemand[]            @relation("FeeDemandBranch")
+  paymentOrders   PaymentOrder[]         @relation("PaymentOrderBranch")
+  payments        Payment[]              @relation("PaymentBranch")
+  refunds         Refund[]               @relation("RefundBranch")
+  credits         Credit[]               @relation("CreditBranch")
+  adjustments     Adjustment[]           @relation("AdjustmentBranch")
+  ledgerEntries   LedgerEntry[]          @relation("LedgerEntryBranch")
+  receipts        Receipt[]              @relation("ReceiptBranch")
+  invoices        Invoice[]              @relation("InvoiceBranch")
+  lateFeeAccruals LateFeeAccrual[]       @relation("LateFeeAccrualBranch")
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, managerId])
+  @@map("branches")
+}
+
+/// Tenant-scoped many-to-many membership supports one or multiple branches per user.
+model UserBranchMembership {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+  branchId  String   @db.Uuid
+  branch    Branch   @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Cascade)
+  isPrimary Boolean  @default(false)
+  grantedBy String?  @db.Uuid
+  createdAt DateTime @default(now())
+
+  @@unique([userId, branchId])
+  @@unique([tenantId, id])
+  @@index([tenantId, userId])
+  @@index([tenantId, branchId])
+  @@index([tenantId, grantedBy])
+  @@map("user_branch_memberships")
+}
+
+/// Industry-neutral departments, teams, groups, or other tenant-defined units.
+model OrganizationUnit {
+  id          String                       @id @default(uuid()) @db.Uuid
+  tenantId    String                       @db.Uuid
+  tenant      Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  code        String                       @db.VarChar(48)
+  name        String                       @db.VarChar(160)
+  unitType    String                       @db.VarChar(80)
+  description String?
+  parentId    String?                      @db.Uuid
+  parent      OrganizationUnit?            @relation("OrganizationUnitTree", fields: [tenantId, parentId], references: [tenantId, id], onDelete: NoAction)
+  children    OrganizationUnit[]           @relation("OrganizationUnitTree")
+  active      Boolean                      @default(true)
+  createdAt   DateTime                     @default(now())
+  updatedAt   DateTime                     @updatedAt
+  memberships UserOrganizationMembership[]
+
+  @@unique([tenantId, unitType, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, unitType, active])
+  @@index([tenantId, parentId])
+  @@map("organization_units")
+}
+
+model UserOrganizationMembership {
+  id        String           @id @default(uuid()) @db.Uuid
+  tenantId  String           @db.Uuid
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String           @db.Uuid
+  user      User             @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+  unitId    String           @db.Uuid
+  unit      OrganizationUnit @relation(fields: [tenantId, unitId], references: [tenantId, id], onDelete: Cascade)
+  createdAt DateTime         @default(now())
+
+  @@unique([userId, unitId])
+  @@unique([tenantId, id])
+  @@index([tenantId, userId])
+  @@index([tenantId, unitId])
+  @@map("user_organization_memberships")
+}
+
+/// Generic resource assignment. resourceType/resourceId are deliberately opaque:
+/// modules own their own resource tables and lifecycle.
+model UserAssignment {
+  id            String           @id @default(uuid()) @db.Uuid
+  tenantId      String           @db.Uuid
+  tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId        String           @db.Uuid
+  user          User             @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+  branchId      String?          @db.Uuid
+  branch        Branch?          @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+  resourceType  String           @db.VarChar(80)
+  resourceId    String           @db.VarChar(200)
+  resourceLabel String?          @db.VarChar(200)
+  status        AssignmentStatus @default(ASSIGNED)
+  dueAt         DateTime?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  metadata      Json?
+  createdBy     String?          @db.Uuid
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@unique([tenantId, userId, resourceType, resourceId])
+  @@unique([tenantId, id])
+  @@index([tenantId, userId, status])
+  @@index([tenantId, resourceType, resourceId])
+  @@index([tenantId, branchId])
+  @@index([tenantId, createdBy])
+  @@map("user_assignments")
+}
+
+/// Global platform plan catalog. Plan modules and numeric limits are versioned
+/// through immutable rows so edits do not rewrite an active subscription's history.
+model Plan {
+  id            String               @id @default(uuid()) @db.Uuid
+  key           String               @unique @db.VarChar(80)
+  name          String               @db.VarChar(160)
+  description   String?
+  monthlyPrice  Decimal              @default(0) @db.Decimal(18, 4)
+  yearlyPrice   Decimal              @default(0) @db.Decimal(18, 4)
+  currency      String               @default("USD") @db.Char(3)
+  trialDays     Int                  @default(0)
+  active        Boolean              @default(true)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  modules       PlanModule[]
+  entitlements  PlanEntitlement[]
+  subscriptions TenantSubscription[]
+
+  @@map("plans")
+}
+
+model PlanModule {
+  id        String  @id @default(uuid()) @db.Uuid
+  planId    String  @db.Uuid
+  plan      Plan    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  moduleKey String  @db.VarChar(80)
+  enabled   Boolean @default(true)
+
+  @@unique([planId, moduleKey])
+  @@map("plan_modules")
+}
+
+model PlanEntitlement {
+  id             String @id @default(uuid()) @db.Uuid
+  planId         String @db.Uuid
+  plan           Plan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  entitlementKey String @db.VarChar(100)
+  limitValue     Int?
+
+  @@unique([planId, entitlementKey])
+  @@map("plan_entitlements")
+}
+
+model TenantSubscription {
+  id                     String             @id @default(uuid()) @db.Uuid
+  tenantId               String             @db.Uuid
+  tenant                 Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planId                 String             @db.Uuid
+  plan                   Plan               @relation(fields: [planId], references: [id], onDelete: Restrict)
+  status                 SubscriptionStatus @default(TRIAL)
+  billingInterval        BillingInterval    @default(MONTHLY)
+  amount                 Decimal            @default(0) @db.Decimal(18, 4)
+  currency               String             @default("USD") @db.Char(3)
+  startedAt              DateTime           @default(now())
+  trialEndsAt            DateTime?
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  isCurrent              Boolean            @default(true)
+  cancelAtPeriodEnd      Boolean            @default(false)
+  cancelledAt            DateTime?
+  externalCustomerId     String?
+  externalSubscriptionId String?
+  createdBy              String?            @db.Uuid
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  invoices               PlatformInvoice[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status, currentPeriodEnd])
+  @@index([planId, status])
+  @@map("tenant_subscriptions")
+}
+
+model TenantModuleOverride {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  moduleKey String   @db.VarChar(80)
+  enabled   Boolean
+  reason    String?
+  updatedBy String?  @db.Uuid
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, moduleKey])
+  @@unique([tenantId, id])
+  @@map("tenant_module_overrides")
+}
+
+model TenantEntitlementOverride {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @db.Uuid
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  entitlementKey String   @db.VarChar(100)
+  /// Null means unlimited; non-null values replace the current plan limit.
+  limitValue     Int?
+  reason         String   @db.VarChar(500)
+  updatedBy      String?  @db.Uuid
+  updatedAt      DateTime @updatedAt
+
+  @@unique([tenantId, entitlementKey])
+  @@unique([tenantId, id])
+  @@map("tenant_entitlement_overrides")
+}
+
+/// SaaS invoices are separate from tenant-issued student invoices.
+model PlatformInvoice {
+  id             String             @id @default(uuid()) @db.Uuid
+  tenantId       String             @db.Uuid
+  tenant         Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscriptionId String             @db.Uuid
+  subscription   TenantSubscription @relation(fields: [tenantId, subscriptionId], references: [tenantId, id], onDelete: Restrict)
+  invoiceNumber  String             @db.VarChar(80)
+  status         String             @default("OPEN") @db.VarChar(32)
+  currency       String             @default("USD") @db.Char(3)
+  subtotal       Decimal            @db.Decimal(18, 4)
+  tax            Decimal            @default(0) @db.Decimal(18, 4)
+  total          Decimal            @db.Decimal(18, 4)
+  dueAt          DateTime
+  paidAt         DateTime?
+  issuedAt       DateTime           @default(now())
+  lineSnapshot   Json
+  createdAt      DateTime           @default(now())
+  payments       PlatformPayment[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId, status, dueAt])
+  @@index([tenantId, subscriptionId])
+  @@map("platform_invoices")
+}
+
+model PlatformPayment {
+  id                String           @id @default(uuid()) @db.Uuid
+  tenantId          String           @db.Uuid
+  tenant            Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoiceId         String           @db.Uuid
+  invoice           PlatformInvoice  @relation(fields: [tenantId, invoiceId], references: [tenantId, id], onDelete: Restrict)
+  provider          String           @db.VarChar(80)
+  providerPaymentId String?          @db.VarChar(200)
+  idempotencyKey    String           @db.VarChar(200)
+  status            String           @default("PENDING") @db.VarChar(32)
+  amount            Decimal          @db.Decimal(18, 4)
+  currency          String           @default("USD") @db.Char(3)
+  paidAt            DateTime?
+  createdAt         DateTime         @default(now())
+  refunds           PlatformRefund[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, invoiceId, status])
+  @@map("platform_payments")
+}
+
+model PlatformRefund {
+  id               String          @id @default(uuid()) @db.Uuid
+  tenantId         String          @db.Uuid
+  tenant           Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  paymentId        String          @db.Uuid
+  payment          PlatformPayment @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: Restrict)
+  amount           Decimal         @db.Decimal(18, 4)
+  currency         String          @default("USD") @db.Char(3)
+  reason           String
+  status           String          @default("REQUESTED") @db.VarChar(32)
+  externalRefundId String?
+  createdBy        String?         @db.Uuid
+  createdAt        DateTime        @default(now())
+  processedAt      DateTime?
+
+  @@unique([tenantId, id])
+  @@index([tenantId, paymentId, status])
+  @@map("platform_refunds")
+}
+
+model TenantNumberingSettings {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @unique @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Version of the active numbering format. Version 2 is the first DB-reserved
+  /// snapshot; version 1 remains attached to pre-reservation Sequence rows.
+  formatVersion Int @default(2)
+
+  receiptPrefix     String @default("RCPT")
+  invoicePrefix     String @default("INV")
+  paymentPrefix     String @default("PAY")
+  demandPrefix      String @default("DMD")
+  refundPrefix      String @default("REF")
+  creditNotePrefix  String @default("CRN")
+  adjustmentPrefix  String @default("ADJ")
+  applicationPrefix String @default("APP")
+  studentPrefix     String @default("STU")
+
+  padding           Int       @default(6)
+  includeYear       Boolean   @default(true)
+  separator         String    @default("-")
+  resetAnnually     Boolean   @default(false)
+  resetAnnuallyFrom DateTime? @map("reset_annually_from") @db.Date
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@map("tenant_numbering_settings")
+}
+
+model TenantPaymentGateway {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  provider                GatewayProvider
+  environment             GatewayEnvironment @default(TEST)
+  displayName             String
+  keyId                   String
+  /// AES-256-GCM ciphertext. Never returned by any API response.
+  secretCiphertext        String
+  webhookSecretCiphertext String?
+  /// Provider-specific extras (e.g. PayU salt, Stripe account id).
+  extraConfig             Json?
+
+  enabled          Boolean             @default(false)
+  isDefault        Boolean             @default(false)
+  isBackup         Boolean             @default(false)
+  priority         Int                 @default(100)
+  supportedMethods PaymentMethodKind[]
+  /// Optional routing rules: [{ "method": "UPI", "upTo": 100000 }]
+  routingRules     Json?
+  minAmount        Decimal?            @db.Decimal(18, 4)
+  maxAmount        Decimal?            @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  updatedBy String?  @db.Uuid
+  active    Boolean  @default(true)
+
+  @@unique([tenantId, provider, environment])
+  @@unique([tenantId, id])
+  @@index([tenantId, enabled])
+  @@map("tenant_payment_gateways")
+}
+
+model TenantNotificationSetting {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  event          NotificationEvent
+  channel        NotificationChannel
+  enabled        Boolean             @default(true)
+  provider       String              @default("SMTP")
+  providerConfig Json?
+  fromAddress    String?
+  fromName       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, event, channel])
+  @@unique([tenantId, id])
+  @@map("tenant_notification_settings")
+}
+
+// =====================================================================================
+// IDENTITY, RBAC
+// =====================================================================================
+
+model User {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  email        String
+  phone        String?
+  passwordHash String
+  firstName    String
+  lastName     String?
+  status       UserStatus @default(INVITED)
+  invitationTokenHash String?   @unique @db.VarChar(64)
+  invitationExpiresAt DateTime?
+  emailVerifiedAt     DateTime?
+  pendingEmail        String?   @db.VarChar(254)
+  emailChangeTokenHash String?  @unique @db.VarChar(64)
+  emailChangeExpiresAt DateTime?
+
+  /// Set when the user is a student or parent portal account.
+  studentId  String? @db.Uuid
+  guardianId String? @db.Uuid
+
+  mustChangePassword Boolean   @default(false)
+  lastLoginAt        DateTime?
+  failedLoginCount   Int       @default(0)
+  lockedUntil        DateTime?
+
+  isPlatformAdmin Boolean @default(false)
+  sessionVersion  Int     @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  updatedBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  userRoles               UserRole[]
+  refreshTokens           RefreshToken[]
+  branchMemberships       UserBranchMembership[]
+  managedBranches         Branch[]                     @relation("BranchManager")
+  organizationMemberships UserOrganizationMembership[]
+  assignments             UserAssignment[]
+
+  @@unique([tenantId, email])
+  @@unique([tenantId, studentId])
+  @@unique([tenantId, guardianId])
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([email])
+  @@map("users")
+}
+
+model Role {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Built-in keys remain stable; custom roles use tenant-unique keys such as BRANCH_MANAGER.
+  key                   String   @db.VarChar(80)
+  name                  String
+  description           String?
+  isSystem              Boolean  @default(false)
+  active                Boolean  @default(true)
+  /// Distinguishes an untouched seeded role from one intentionally configured with no permissions.
+  permissionsConfigured Boolean  @default(false)
+  /// Scope ids this role is limited to (e.g. specific academic units).
+  scopeUnitIds          String[] @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("roles")
+}
+
+/// Platform-wide permission catalogue. Not tenant-owned: the set of permissions
+/// is a property of the software, not of a customer.
+model Permission {
+  id          String  @id @default(uuid()) @db.Uuid
+  /// Dotted key, e.g. `payment.refund`.
+  key         String  @unique
+  resource    String
+  action      String
+  description String?
+  /// Permissions that require an approval workflow by default.
+  sensitive   Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  rolePermissions RolePermission[]
+
+  @@index([resource])
+  @@map("permissions")
+}
+
+model UserRole {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+  roleId String @db.Uuid
+  role   Role   @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Cascade)
+
+  grantedBy String?  @db.Uuid
+  createdAt DateTime @default(now())
+
+  @@unique([userId, roleId])
+  @@unique([tenantId, id])
+  @@index([tenantId, roleId])
+  @@index([tenantId, userId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  roleId       String     @db.Uuid
+  role         Role       @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Cascade)
+  permissionId String     @db.Uuid
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([roleId, permissionId])
+  @@unique([tenantId, id])
+  @@index([tenantId, roleId])
+  @@map("role_permissions")
+}
+
+/// Refresh tokens are stored hashed so a database leak cannot mint new sessions.
+model RefreshToken {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  userId        String    @db.Uuid
+  user          User      @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+  tokenHash     String    @unique
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  rotatedFromId String?   @db.Uuid
+  userAgent     String?
+  ipAddress     String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([userId, revokedAt])
+  @@index([tenantId, userId])
+  @@map("refresh_tokens")
+}
+
+// =====================================================================================
+// ACADEMIC STRUCTURE, STUDENTS, ADMISSIONS
+// =====================================================================================
+
+model AcademicYear {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name      String
+  startDate DateTime  @db.Date
+  endDate   DateTime  @db.Date
+  isCurrent Boolean   @default(false)
+  isClosed  Boolean   @default(false)
+  closedAt  DateTime?
+
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  payerResponsibilityRules PayerResponsibilityRule[]
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, id])
+  @@index([tenantId, isCurrent])
+  @@map("academic_years")
+}
+
+/// Configurable academic hierarchy (programs, classes, sections, batches,
+/// departments, hostels, transport routes) so no customer's structure is
+/// hard-coded in source.
+model AcademicUnit {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  unitType AcademicUnitType
+  name     String
+  code     String
+  parentId String?          @db.Uuid
+  parent   AcademicUnit?    @relation("AcademicUnitTree", fields: [tenantId, parentId], references: [tenantId, id], onDelete: NoAction)
+  children AcademicUnit[]   @relation("AcademicUnitTree")
+
+  metadata  Json?
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  memberships StudentUnitMembership[]
+
+  @@unique([tenantId, unitType, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, unitType, active])
+  @@index([tenantId, parentId])
+  @@map("academic_units")
+}
+
+model Student {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  admissionNumber String
+  rollNumber      String?
+  firstName       String
+  middleName      String?
+  lastName        String?
+  dateOfBirth     DateTime? @db.Date
+  gender          String?
+  /// Configurable category (General / OBC / SC / ST / EWS / any tenant value).
+  category        String?
+  phone           String?
+  email           String?
+  addressLine1    String?
+  city            String?
+  state           String?
+  postalCode      String?
+  country         String?
+
+  status StudentStatus @default(ACTIVE)
+
+  /// Operational home branch. Null is reserved for legacy/unassigned records,
+  /// which are visible only to tenant administrators until mapped.
+  branchId String? @db.Uuid
+  branch   Branch? @relation("StudentHomeBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  academicYearId String? @db.Uuid
+  /// Primary class/section unit, denormalised for fast list queries.
+  primaryUnitId  String? @db.Uuid
+
+  admissionType       String?
+  scholarshipCategory String?
+  hostelStatus        Boolean  @default(false)
+  transportStatus     Boolean  @default(false)
+  transportRouteId    String?  @db.Uuid
+  isInternational     Boolean  @default(false)
+  academicScore       Decimal? @db.Decimal(6, 2)
+
+  familyGroupId String? @db.Uuid
+  metadata      Json?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  updatedBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  memberships              StudentUnitMembership[]
+  guardians                StudentGuardian[]
+  customAttributes         StudentCustomAttribute[]
+  groupMemberships         StudentGroupMember[]
+  demands                  FeeDemand[]
+  payments                 Payment[]
+  receipts                 Receipt[]
+  credits                  Credit[]
+  benefitAssignments       BenefitAssignment[]
+  feeOverrides             FeeOverride[]
+  payerResponsibilityRules PayerResponsibilityRule[]
+
+  @@unique([tenantId, admissionNumber])
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, branchId])
+  @@index([tenantId, primaryUnitId])
+  @@index([tenantId, familyGroupId])
+  @@index([tenantId, phone])
+  @@index([tenantId, email])
+  @@map("students")
+}
+
+model StudentUnitMembership {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  studentId      String       @db.Uuid
+  student        Student      @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Cascade)
+  academicUnitId String       @db.Uuid
+  academicUnit   AcademicUnit @relation(fields: [tenantId, academicUnitId], references: [tenantId, id], onDelete: Cascade)
+
+  academicYearId String?   @db.Uuid
+  isPrimary      Boolean   @default(false)
+  startedOn      DateTime  @db.Date
+  endedOn        DateTime? @db.Date
+
+  createdAt DateTime @default(now())
+
+  @@unique([studentId, academicUnitId, academicYearId])
+  @@unique([tenantId, id])
+  @@index([tenantId, academicUnitId])
+  @@index([tenantId, studentId])
+  @@map("student_unit_memberships")
+}
+
+model Guardian {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  firstName        String
+  lastName         String?
+  relation         GuardianRelation
+  phone            String?
+  email            String?
+  occupation       String?
+  addressLine1     String?
+  city             String?
+  isPrimaryContact Boolean          @default(false)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  students                 StudentGuardian[]
+  payerResponsibilityRules PayerResponsibilityRule[] @relation("ResponsibilityRuleGuardian")
+  responsibilities         FeeDemandResponsibility[] @relation("DemandResponsibilityGuardian")
+  paymentOrders            PaymentOrder[]            @relation("PaymentOrderPayerGuardian")
+  payerPayments            Payment[]                 @relation("PaymentPayerGuardian")
+
+  @@unique([tenantId, id])
+  @@index([tenantId, phone])
+  @@map("guardians")
+}
+
+model StudentGuardian {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @db.Uuid
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  studentId  String   @db.Uuid
+  student    Student  @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Cascade)
+  guardianId String   @db.Uuid
+  guardian   Guardian @relation(fields: [tenantId, guardianId], references: [tenantId, id], onDelete: Cascade)
+
+  isPrimaryPayer Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  @@unique([studentId, guardianId])
+  @@unique([tenantId, id])
+  @@index([tenantId, studentId])
+  @@index([tenantId, guardianId])
+  @@map("student_guardians")
+}
+
+model StudentGroup {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name           String
+  code           String
+  description    String?
+  /// Optional rule that keeps group membership dynamic.
+  membershipRule Json?
+  isDynamic      Boolean @default(false)
+  active         Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  members                  StudentGroupMember[]
+  payerResponsibilityRules PayerResponsibilityRule[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@map("student_groups")
+}
+
+model StudentGroupMember {
+  id        String       @id @default(uuid()) @db.Uuid
+  tenantId  String       @db.Uuid
+  tenant    Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  groupId   String       @db.Uuid
+  group     StudentGroup @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
+  studentId String       @db.Uuid
+  student   Student      @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Cascade)
+
+  addedAt DateTime @default(now())
+  addedBy String?  @db.Uuid
+
+  @@unique([groupId, studentId])
+  @@unique([tenantId, id])
+  @@index([tenantId, studentId])
+  @@index([tenantId, groupId])
+  @@map("student_group_members")
+}
+
+/// Key/value custom fields (e.g. `sport_quota`, `staff_ward`) that policy
+/// conditions can reference without a schema change.
+model StudentCustomAttribute {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String  @db.Uuid
+  tenant    Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  studentId String  @db.Uuid
+  student   Student @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Cascade)
+
+  key       String
+  value     String?
+  valueType CustomFieldType @default(STRING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, key])
+  @@unique([tenantId, id])
+  @@index([tenantId, key])
+  @@index([tenantId, studentId])
+  @@map("student_custom_attributes")
+}
+
+model AdmissionApplication {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  applicationNumber  String
+  applicantFirstName String
+  applicantLastName  String?
+  dateOfBirth        DateTime? @db.Date
+  gender             String?
+  phone              String?
+  email              String?
+  category           String?
+
+  academicYearId  String? @db.Uuid
+  targetUnitId    String? @db.Uuid
+  admissionType   String?
+  isInternational Boolean @default(false)
+
+  status   AdmissionStatus @default(DRAFT)
+  metadata Json?
+
+  demandId    String?   @db.Uuid
+  submittedAt DateTime?
+  confirmedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+
+  admissions Admission[]
+
+  @@unique([tenantId, applicationNumber])
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@map("admission_applications")
+}
+
+model Admission {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  admissionNumber String
+  applicationId   String?               @db.Uuid
+  application     AdmissionApplication? @relation(fields: [tenantId, applicationId], references: [tenantId, id], onDelete: NoAction)
+
+  studentId   String?         @db.Uuid
+  status      AdmissionStatus @default(CONFIRMED)
+  confirmedAt DateTime?
+  admittedOn  DateTime?       @db.Date
+  remarks     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+
+  @@unique([tenantId, admissionNumber])
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, applicationId])
+  @@map("admissions")
+}
+
+/// Third-party payer entity: sponsor company, government scheme, trust, or
+/// scholarship fund. Sponsors pay on behalf of students without being guardians.
+model Sponsor {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name          String
+  code          String
+  type          String
+  contactPerson String?
+  phone         String?
+  email         String?
+  address       String?
+  /// Credit limit for sponsored commitments, if the tenant enforces one.
+  creditLimit   Decimal? @db.Decimal(18, 4)
+  active        Boolean  @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  responsibilityRules PayerResponsibilityRule[] @relation("ResponsibilityRuleSponsor")
+  responsibilities    FeeDemandResponsibility[] @relation("DemandResponsibilitySponsor")
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@map("sponsors")
+}
+
+/// Tenant-configured rules assign portions of future demands to a payer.
+/// Rule edits affect future calculations only; issued demands keep snapshots.
+model PayerResponsibilityRule {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  code            String
+  name            String
+  payerType       PayerType
+  payerName       String?
+  payerSponsorId  String?   @db.Uuid
+  sponsor         Sponsor?  @relation("ResponsibilityRuleSponsor", fields: [tenantId, payerSponsorId], references: [tenantId, id], onDelete: Restrict)
+  payerGuardianId String?   @db.Uuid
+  payerGuardian   Guardian? @relation("ResponsibilityRuleGuardian", fields: [tenantId, payerGuardianId], references: [tenantId, id], onDelete: Restrict)
+
+  studentId      String?       @db.Uuid
+  student        Student?      @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+  studentGroupId String?       @db.Uuid
+  studentGroup   StudentGroup? @relation(fields: [tenantId, studentGroupId], references: [tenantId, id], onDelete: Restrict)
+  academicYearId String?       @db.Uuid
+  academicYear   AcademicYear? @relation(fields: [tenantId, academicYearId], references: [tenantId, id], onDelete: Restrict)
+  feeTypeId      String?       @db.Uuid
+  feeType        FeeType?      @relation(fields: [tenantId, feeTypeId], references: [tenantId, id], onDelete: Restrict)
+
+  basis         PayerResponsibilityBasis
+  value         Decimal                  @db.Decimal(18, 4)
+  priority      Int                      @default(100)
+  effectiveFrom DateTime                 @db.Date
+  effectiveTo   DateTime?                @db.Date
+  active        Boolean                  @default(true)
+  deletedAt     DateTime?
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+  createdBy     String?                  @db.Uuid
+
+  demandResponsibilities FeeDemandResponsibility[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, active, effectiveFrom, priority])
+  @@index([tenantId, studentId, active])
+  @@index([tenantId, studentGroupId, active])
+  @@index([tenantId, academicYearId, feeTypeId])
+  @@index([tenantId, payerSponsorId])
+  @@index([tenantId, payerGuardianId])
+  @@index([tenantId, feeTypeId])
+  @@map("payer_responsibility_rules")
+}
+
+// =====================================================================================
+// FEE CATALOG
+// =====================================================================================
+
+model FeeCategory {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String
+  code        String
+  kind        FeeCategoryKind @default(OTHER)
+  description String?
+  /// Ordering used when a tenant wants a deterministic display sequence.
+  sortOrder   Int             @default(0)
+  active      Boolean         @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  feeTypes FeeType[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@map("fee_categories")
+}
+
+model FeeType {
+  id         String      @id @default(uuid()) @db.Uuid
+  tenantId   String      @db.Uuid
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  categoryId String      @db.Uuid
+  category   FeeCategory @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Restrict)
+
+  name        String
+  code        String
+  description String?
+
+  calculationMethod FeeCalculationMethod @default(FIXED)
+  defaultFrequency  FeeFrequency         @default(ANNUAL)
+  optionality       FeeOptionality       @default(MANDATORY)
+  taxable           Boolean              @default(false)
+  taxPercent        Decimal?             @db.Decimal(9, 6)
+
+  /// Rule evaluated when optionality is CONDITIONAL.
+  applicabilityRule Json?
+  /// Display/dunning order and policy priority hints.
+  priority          Int     @default(100)
+  active            Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  updatedBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  versions                 FeeTypeVersion[]
+  structureItems           FeeStructureItem[]
+  payerResponsibilityRules PayerResponsibilityRule[]
+  tenantLateFeeSettings    TenantSettings[]          @relation("TenantLateFeeType")
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, active])
+  @@index([tenantId, categoryId])
+  @@map("fee_types")
+}
+
+/// Immutable snapshot of a fee type's configuration. A structure item always
+/// refers to a specific version, so re-pricing never rewrites history.
+model FeeTypeVersion {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String  @db.Uuid
+  tenant    Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  feeTypeId String  @db.Uuid
+  feeType   FeeType @relation(fields: [tenantId, feeTypeId], references: [tenantId, id], onDelete: Cascade)
+
+  version       Int
+  status        VersionStatus @default(DRAFT)
+  effectiveFrom DateTime      @db.Date
+  effectiveTo   DateTime?     @db.Date
+
+  calculationMethod FeeCalculationMethod
+  defaultFrequency  FeeFrequency
+  optionality       FeeOptionality
+  taxable           Boolean
+  taxPercent        Decimal?             @db.Decimal(9, 6)
+  applicabilityRule Json?
+  /// Safe, tenant-authored base amount expression snapshot (never executable code).
+  calculationConfig Json?
+
+  approvedBy String?   @db.Uuid
+  approvedAt DateTime?
+  createdAt  DateTime  @default(now())
+  createdBy  String?   @db.Uuid
+
+  @@unique([feeTypeId, version])
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, feeTypeId])
+  @@map("fee_type_versions")
+}
+
+// =====================================================================================
+// FEE STRUCTURES (standard pricing, versioned)
+// =====================================================================================
+
+model FeeStructure {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String
+  code        String
+  description String?
+
+  academicYearId String?              @db.Uuid
+  /// Scope the structure applies to (usually a CLASS or PROGRAM unit).
+  targetType     AssignmentTargetType @default(CLASS)
+  targetUnitId   String?              @db.Uuid
+
+  /// Booking order when several structures match the same student.
+  priority Int     @default(100)
+  active   Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  updatedBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  versions    FeeStructureVersion[]
+  assignments FeeAssignment[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, active])
+  @@index([tenantId, targetUnitId])
+  @@map("fee_structures")
+}
+
+model FeeStructureVersion {
+  id             String       @id @default(uuid()) @db.Uuid
+  tenantId       String       @db.Uuid
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  feeStructureId String       @db.Uuid
+  feeStructure   FeeStructure @relation(fields: [tenantId, feeStructureId], references: [tenantId, id], onDelete: Cascade)
+
+  version       Int
+  status        VersionStatus @default(DRAFT)
+  effectiveFrom DateTime      @db.Date
+  effectiveTo   DateTime?     @db.Date
+  notes         String?
+
+  /// Set when this version supersedes another; makes the audit path explicit.
+  supersedesVersionId String? @db.Uuid
+
+  totalAmount Decimal? @db.Decimal(18, 4)
+
+  approvedBy String?   @db.Uuid
+  approvedAt DateTime?
+  createdAt  DateTime  @default(now())
+  createdBy  String?   @db.Uuid
+
+  items       FeeStructureItem[]
+  assignments FeeAssignment[]
+
+  @@unique([feeStructureId, version])
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, feeStructureId])
+  @@map("fee_structure_versions")
+}
+
+model FeeStructureItem {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  feeStructureVersionId String              @db.Uuid
+  feeStructureVersion   FeeStructureVersion @relation(fields: [tenantId, feeStructureVersionId], references: [tenantId, id], onDelete: Cascade)
+  feeTypeId             String              @db.Uuid
+  feeType               FeeType             @relation(fields: [tenantId, feeTypeId], references: [tenantId, id], onDelete: Restrict)
+  feeTypeVersionId      String?             @db.Uuid
+
+  /// FIXED amount, or the rate for PERCENTAGE / QUANTITY / USAGE methods.
+  amount      Decimal  @db.Decimal(18, 4)
+  quantity    Decimal? @db.Decimal(12, 4)
+  percentBase Decimal? @db.Decimal(18, 4)
+
+  frequency   FeeFrequency
+  optionality FeeOptionality @default(MANDATORY)
+  taxable     Boolean        @default(false)
+  taxPercent  Decimal?       @db.Decimal(9, 6)
+
+  dueDate      DateTime?             @db.Date
+  /// Relative due rule, e.g. { "offsetDays": 15, "from": "PERIOD_START" }.
+  dueRule      Json?
+  installments InstallmentRuleItem[]
+
+  sortOrder Int     @default(0)
+  active    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([feeStructureVersionId, feeTypeId])
+  @@unique([tenantId, id])
+  @@index([tenantId, feeTypeId])
+  @@index([tenantId, feeStructureVersionId])
+  @@map("fee_structure_items")
+}
+
+/// Installment rule attached to a structure item. Kept separate from
+/// `Installment` (which is the generated per-student schedule).
+model InstallmentRuleItem {
+  id                 String           @id @default(uuid()) @db.Uuid
+  tenantId           String           @db.Uuid
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  feeStructureItemId String           @db.Uuid
+  feeStructureItem   FeeStructureItem @relation(fields: [tenantId, feeStructureItemId], references: [tenantId, id], onDelete: Cascade)
+
+  sequence      Int
+  basis         InstallmentBasis @default(PERCENTAGE)
+  amount        Decimal?         @db.Decimal(18, 4)
+  percentage    Decimal?         @db.Decimal(9, 6)
+  dueDate       DateTime?        @db.Date
+  dueOffsetDays Int?
+  label         String?
+
+  @@unique([feeStructureItemId, sequence])
+  @@unique([tenantId, id])
+  @@index([tenantId, feeStructureItemId])
+  @@map("installment_rule_items")
+}
+
+// =====================================================================================
+// POLICY / RULE ENGINE
+// =====================================================================================
+
+model FeePolicy {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name         String
+  code         String
+  description  String?
+  policyType   PolicyType
+  stackingMode StackingMode @default(STACKABLE)
+  /// Deterministic evaluation order. Lower runs first.
+  priority     Int          @default(100)
+  /// Set to false to allow a tenant to stage a rule without it applying.
+  active       Boolean      @default(true)
+
+  /// Cross-policy grouping for EXCLUSIVE / HIGHEST_BENEFIT arbitration.
+  arbitrationGroup String?
+  /// Stage within the calculation pipeline (see docs/fee-engine).
+  stage            Int     @default(50)
+
+  requiresApproval  Boolean  @default(false)
+  approvalThreshold Decimal? @db.Decimal(18, 4)
+  /// Emit an "explain" note on the demand for auditability.
+  explainTemplate   String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  updatedBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  versions FeePolicyVersion[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, active, stage])
+  @@map("fee_policies")
+}
+
+model FeePolicyVersion {
+  id       String    @id @default(uuid()) @db.Uuid
+  tenantId String    @db.Uuid
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  policyId String    @db.Uuid
+  policy   FeePolicy @relation(fields: [tenantId, policyId], references: [tenantId, id], onDelete: Cascade)
+
+  version       Int
+  status        VersionStatus @default(DRAFT)
+  effectiveFrom DateTime      @db.Date
+  effectiveTo   DateTime?     @db.Date
+  /// Root of the condition tree: { "op": "AND", "children": [...] }.
+  conditionTree Json?
+  /// Caps/floors applied after actions: { "minAmount": 0, "maxDiscount": 30000 }.
+  limits        Json?
+
+  approvedBy String?   @db.Uuid
+  approvedAt DateTime?
+  createdAt  DateTime  @default(now())
+  createdBy  String?   @db.Uuid
+
+  conditions FeePolicyCondition[]
+  actions    FeePolicyAction[]
+  scopes     FeePolicyScope[]
+
+  @@unique([policyId, version])
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, policyId])
+  @@map("fee_policy_versions")
+}
+
+/// Normalised condition rows. The engine also accepts a nested `conditionTree`
+/// on the version; these rows make rules queryable for the configuration UI and
+/// for validation (duplicate/circular detection).
+model FeePolicyCondition {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  policyVersionId String           @db.Uuid
+  policyVersion   FeePolicyVersion @relation(fields: [tenantId, policyVersionId], references: [tenantId, id], onDelete: Cascade)
+
+  /// Dotted field path, e.g. `student.academicScore`.
+  field     String
+  operator  ConditionOperator
+  value     Json?
+  valueType CustomFieldType   @default(STRING)
+
+  groupIndex  Int             @default(0)
+  logicalWith LogicalOperator @default(AND)
+  negate      Boolean         @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([policyVersionId, groupIndex])
+  @@index([tenantId, policyVersionId])
+  @@map("fee_policy_conditions")
+}
+
+model FeePolicyAction {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  policyVersionId String           @db.Uuid
+  policyVersion   FeePolicyVersion @relation(fields: [tenantId, policyVersionId], references: [tenantId, id], onDelete: Cascade)
+
+  kind        ActionKind
+  amountBasis ActionAmountBasis @default(RUNNING_TOTAL)
+  amount      Decimal?          @db.Decimal(18, 4)
+  percentage  Decimal?          @db.Decimal(9, 6)
+  /// Restrict the action to specific fee types; empty means "all".
+  feeTypeIds  String[]          @db.Uuid
+  /// Cap how much this action may remove/add, in absolute money terms.
+  capAmount   Decimal?          @db.Decimal(18, 4)
+  floorAmount Decimal?          @db.Decimal(18, 4)
+  dueDate     DateTime?         @db.Date
+  sortOrder   Int               @default(0)
+  parameters  Json?
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([policyVersionId])
+  @@index([tenantId, policyVersionId])
+  @@map("fee_policy_actions")
+}
+
+/// Where a policy applies. Kept separate from conditions because scoping is
+/// evaluated first and cheaply, before the condition tree runs.
+model FeePolicyScope {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  policyVersionId String           @db.Uuid
+  policyVersion   FeePolicyVersion @relation(fields: [tenantId, policyVersionId], references: [tenantId, id], onDelete: Cascade)
+
+  targetType      AssignmentTargetType
+  targetId        String?              @db.Uuid
+  academicYearId  String?              @db.Uuid
+  includeChildren Boolean              @default(true)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([policyVersionId])
+  @@index([tenantId, targetType, targetId])
+  @@index([tenantId, policyVersionId])
+  @@map("fee_policy_scopes")
+}
+
+// =====================================================================================
+// ADJUSTMENT INSTRUMENTS (scholarship != discount != concession != waiver)
+// =====================================================================================
+
+model Scholarship {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name     String
+  code     String
+  kind     ScholarshipKind
+  /// Source of funds: institution, government scheme, trust, donor.
+  funder   String?
+  policyId String?         @db.Uuid
+
+  percentage  Decimal? @db.Decimal(9, 6)
+  fixedAmount Decimal? @db.Decimal(18, 4)
+  maxAmount   Decimal? @db.Decimal(18, 4)
+  feeTypeIds  String[] @db.Uuid
+
+  academicYearId String?   @db.Uuid
+  effectiveFrom  DateTime  @db.Date
+  effectiveTo    DateTime? @db.Date
+
+  requiresApproval Boolean @default(true)
+  active           Boolean @default(true)
+  notes            String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  updatedBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  assignments BenefitAssignment[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, active])
+  @@map("scholarships")
+}
+
+model Discount {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name     String
+  code     String
+  /// e.g. SIBLING, EARLY_PAYMENT, STAFF_WARD - kept as data, not an enum, so
+  /// tenants can invent their own discount families.
+  reason   String
+  policyId String? @db.Uuid
+
+  percentage  Decimal? @db.Decimal(9, 6)
+  fixedAmount Decimal? @db.Decimal(18, 4)
+  maxAmount   Decimal? @db.Decimal(18, 4)
+  feeTypeIds  String[] @db.Uuid
+
+  stackingMode     StackingMode @default(STACKABLE)
+  priority         Int          @default(100)
+  effectiveFrom    DateTime     @db.Date
+  effectiveTo      DateTime?    @db.Date
+  requiresApproval Boolean      @default(false)
+  active           Boolean      @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  assignments BenefitAssignment[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@map("discounts")
+}
+
+model Concession {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name     String
+  code     String
+  reason   String
+  policyId String? @db.Uuid
+
+  percentage  Decimal? @db.Decimal(9, 6)
+  fixedAmount Decimal? @db.Decimal(18, 4)
+  maxAmount   Decimal? @db.Decimal(18, 4)
+  feeTypeIds  String[] @db.Uuid
+
+  effectiveFrom    DateTime  @db.Date
+  effectiveTo      DateTime? @db.Date
+  requiresApproval Boolean   @default(true)
+  active           Boolean   @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  assignments BenefitAssignment[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@map("concessions")
+}
+
+model Waiver {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name     String
+  code     String
+  /// MANAGEMENT, HARDSHIP, COVID_RELIEF, TRUST_DISCRETION ...
+  reason   String
+  policyId String? @db.Uuid
+
+  fullWaiver  Boolean  @default(false)
+  percentage  Decimal? @db.Decimal(9, 6)
+  fixedAmount Decimal? @db.Decimal(18, 4)
+  maxAmount   Decimal? @db.Decimal(18, 4)
+  feeTypeIds  String[] @db.Uuid
+
+  effectiveFrom    DateTime  @db.Date
+  effectiveTo      DateTime? @db.Date
+  requiresApproval Boolean   @default(true)
+  active           Boolean   @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  assignments BenefitAssignment[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@map("waivers")
+}
+
+model Surcharge {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name     String
+  code     String
+  reason   String
+  policyId String? @db.Uuid
+
+  percentage  Decimal? @db.Decimal(9, 6)
+  fixedAmount Decimal? @db.Decimal(18, 4)
+  maxAmount   Decimal? @db.Decimal(18, 4)
+  /// Surcharges may be taxable (e.g. a service charge) - normally false.
+  taxable     Boolean  @default(false)
+  taxPercent  Decimal? @db.Decimal(9, 6)
+  feeTypeIds  String[] @db.Uuid
+
+  mandatory     Boolean      @default(false)
+  stackingMode  StackingMode @default(STACKABLE)
+  priority      Int          @default(100)
+  effectiveFrom DateTime     @db.Date
+  effectiveTo   DateTime?    @db.Date
+  active        Boolean      @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, active, effectiveFrom])
+  @@map("surcharges")
+}
+
+/// A student-specific price override. The original amount is never mutated:
+/// the override is stored alongside the base so the diff is explainable.
+model FeeOverride {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  studentId String  @db.Uuid
+  student   Student @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Cascade)
+  feeTypeId String  @db.Uuid
+
+  originalAmount Decimal @db.Decimal(18, 4)
+  overrideAmount Decimal @db.Decimal(18, 4)
+  reason         String
+
+  academicYearId String?   @db.Uuid
+  effectiveFrom  DateTime  @db.Date
+  effectiveTo    DateTime? @db.Date
+
+  status           VersionStatus @default(DRAFT)
+  approvedBy       String?       @db.Uuid
+  approvedAt       DateTime?
+  requiresApproval Boolean       @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+  updatedBy String?  @db.Uuid
+
+  @@unique([tenantId, id])
+  @@index([tenantId, studentId, status])
+  @@index([tenantId, studentId, status, effectiveFrom])
+  @@index([tenantId, feeTypeId])
+  @@map("fee_overrides")
+}
+
+/// Per-student (or per-group) grant of a scholarship, discount, concession or
+/// waiver. Exactly one of the four instrument references is set; which one is
+/// set determines the ledger account and the report it appears in.
+model BenefitAssignment {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  studentId String?  @db.Uuid
+  student   Student? @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Cascade)
+  groupId   String?  @db.Uuid
+
+  scholarshipId String?      @db.Uuid
+  scholarship   Scholarship? @relation(fields: [tenantId, scholarshipId], references: [tenantId, id], onDelete: Restrict)
+  discountId    String?      @db.Uuid
+  discount      Discount?    @relation(fields: [tenantId, discountId], references: [tenantId, id], onDelete: Restrict)
+  concessionId  String?      @db.Uuid
+  concession    Concession?  @relation(fields: [tenantId, concessionId], references: [tenantId, id], onDelete: Restrict)
+  waiverId      String?      @db.Uuid
+  waiver        Waiver?      @relation(fields: [tenantId, waiverId], references: [tenantId, id], onDelete: Restrict)
+
+  academicYearId String?   @db.Uuid
+  effectiveFrom  DateTime  @db.Date
+  effectiveTo    DateTime? @db.Date
+
+  status     VersionStatus @default(PENDING_APPROVAL)
+  reason     String
+  approvedBy String?       @db.Uuid
+  approvedAt DateTime?
+
+  /// Per-student tightening of the instrument (e.g. cap at 30,000).
+  overridePercentage  Decimal?     @db.Decimal(9, 6)
+  overrideFixedAmount Decimal?     @db.Decimal(18, 4)
+  overrideMaxAmount   Decimal?     @db.Decimal(18, 4)
+  /// Ordering and stacking belong to the tenant's grant, not to a code branch.
+  stackingMode        StackingMode @default(STACKABLE)
+  priority            Int          @default(100)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?   @db.Uuid
+  updatedBy String?   @db.Uuid
+  deletedAt DateTime?
+
+  @@unique([tenantId, id])
+  @@index([tenantId, studentId, status])
+  @@index([tenantId, groupId])
+  @@index([tenantId, groupId, status, effectiveFrom])
+  @@index([tenantId, studentId, status, effectiveFrom])
+  @@index([tenantId, scholarshipId])
+  @@index([tenantId, discountId])
+  @@index([tenantId, concessionId])
+  @@index([tenantId, waiverId])
+  @@map("benefit_assignments")
+}
+
+// =====================================================================================
+// FEE ASSIGNMENT AND DEMAND
+// =====================================================================================
+
+/// Applies a fee structure version to a target population. Demand generation
+/// reads assignments; it never reads the structure directly.
+model FeeAssignment {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  branchId String? @db.Uuid
+  branch   Branch? @relation("FeeAssignmentBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  feeStructureId        String              @db.Uuid
+  feeStructure          FeeStructure        @relation(fields: [tenantId, feeStructureId], references: [tenantId, id], onDelete: Restrict)
+  feeStructureVersionId String              @db.Uuid
+  feeStructureVersion   FeeStructureVersion @relation(fields: [tenantId, feeStructureVersionId], references: [tenantId, id], onDelete: Restrict)
+
+  targetType       AssignmentTargetType
+  targetId         String?              @db.Uuid
+  /// Explicit student selection when targetType is STUDENT or a custom list.
+  targetStudentIds String[]             @db.Uuid
+  academicYearId   String?              @db.Uuid
+
+  /// Optional overrides of the structure item schedule.
+  dueDateOverride DateTime? @db.Date
+  installmentRule Json?
+
+  status            VersionStatus @default(DRAFT)
+  generatedAt       DateTime?
+  generationSummary Json?
+  /// Set when the batch partially failed so ops can see what needs attention.
+  needsAttention    Boolean       @default(false)
+
+  approvedBy String?   @db.Uuid
+  approvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+  updatedBy String?  @db.Uuid
+
+  demands FeeDemand[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, branchId])
+  @@index([tenantId, targetType, targetId])
+  @@index([tenantId, feeStructureId])
+  @@index([tenantId, feeStructureVersionId])
+  @@map("fee_assignments")
+}
+
+/// The student's actual obligation for one assignment/period. Preserves
+/// original vs adjustments vs net vs paid vs balance - these are never merged.
+model FeeDemand {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Branch snapshot is retained when the person later transfers locations.
+  branchId String? @db.Uuid
+  branch   Branch? @relation("FeeDemandBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  studentId String  @db.Uuid
+  student   Student @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+
+  demandNumber    String
+  feeAssignmentId String?        @db.Uuid
+  feeAssignment   FeeAssignment? @relation(fields: [tenantId, feeAssignmentId], references: [tenantId, id], onDelete: NoAction)
+
+  academicYearId  String? @db.Uuid
+  studentGroupKey String?
+  /// Groups everything billed together (e.g. one academic year) so separate
+  /// periods stay financially distinct while totals still roll up.
+  financialPeriod String?
+  currency        String  @default("INR") @db.Char(3)
+
+  issueDate DateTime @db.Date
+  dueDate   DateTime @db.Date
+
+  // ---- money breakdown, always present ----
+  baseAmount        Decimal @default(0) @db.Decimal(18, 4)
+  surchargeAmount   Decimal @default(0) @db.Decimal(18, 4)
+  scholarshipAmount Decimal @default(0) @db.Decimal(18, 4)
+  discountAmount    Decimal @default(0) @db.Decimal(18, 4)
+  concessionAmount  Decimal @default(0) @db.Decimal(18, 4)
+  waiverAmount      Decimal @default(0) @db.Decimal(18, 4)
+  overrideAmount    Decimal @default(0) @db.Decimal(18, 4)
+  lateFeeAmount     Decimal @default(0) @db.Decimal(18, 4)
+  taxAmount         Decimal @default(0) @db.Decimal(18, 4)
+  adjustmentAmount  Decimal @default(0) @db.Decimal(18, 4)
+
+  netAmount      Decimal @default(0) @db.Decimal(18, 4)
+  paidAmount     Decimal @default(0) @db.Decimal(18, 4)
+  waivedAmount   Decimal @default(0) @db.Decimal(18, 4)
+  creditedAmount Decimal @default(0) @db.Decimal(18, 4)
+  /// Carried forward from earlier periods. Kept separate from this period's net.
+  arrearsAmount  Decimal @default(0) @db.Decimal(18, 4)
+
+  status DemandStatus @default(DRAFT)
+
+  /// Full explainable calculation: pipeline stages, matched rules, skipped
+  /// rules and the version of the engine that produced them.
+  calculation          Json?
+  calculationVersion   String?
+  /// Total amount before any rounding/limits were applied, for reconciliation.
+  preRoundingNetAmount Decimal? @db.Decimal(18, 4)
+
+  issuedAt     DateTime?
+  cancelledAt  DateTime?
+  cancelReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+  updatedBy String?  @db.Uuid
+
+  items                 FeeDemandItem[]
+  responsibilities      FeeDemandResponsibility[]
+  installments          Installment[]
+  invoices              Invoice[]
+  lateFeeAccruals       LateFeeAccrual[]
+  resultLateFeeAccruals LateFeeAccrual[]          @relation("LateFeeResultDemand")
+  refundAllocations     RefundAllocation[]
+
+  @@unique([tenantId, demandNumber])
+  @@unique([tenantId, id])
+  @@index([tenantId, studentId, status])
+  @@index([tenantId, dueDate])
+  @@index([tenantId, academicYearId])
+  @@index([tenantId, status, dueDate])
+  @@index([tenantId, feeAssignmentId])
+  @@index([tenantId, branchId])
+  @@map("fee_demands")
+}
+
+model FeeDemandItem {
+  id       String    @id @default(uuid()) @db.Uuid
+  tenantId String    @db.Uuid
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  demandId String    @db.Uuid
+  demand   FeeDemand @relation(fields: [tenantId, demandId], references: [tenantId, id], onDelete: Restrict)
+
+  feeTypeId        String  @db.Uuid
+  feeTypeCode      String
+  feeTypeName      String
+  feeCategoryCode  String?
+  feeTypeVersionId String? @db.Uuid
+
+  sequence    Int
+  frequency   FeeFrequency
+  optionality FeeOptionality @default(MANDATORY)
+
+  baseAmount Decimal  @db.Decimal(18, 4)
+  quantity   Decimal? @db.Decimal(12, 4)
+  rate       Decimal? @db.Decimal(18, 4)
+
+  surchargeAmount   Decimal @default(0) @db.Decimal(18, 4)
+  scholarshipAmount Decimal @default(0) @db.Decimal(18, 4)
+  discountAmount    Decimal @default(0) @db.Decimal(18, 4)
+  concessionAmount  Decimal @default(0) @db.Decimal(18, 4)
+  waiverAmount      Decimal @default(0) @db.Decimal(18, 4)
+  overrideAmount    Decimal @default(0) @db.Decimal(18, 4)
+  lateFeeAmount     Decimal @default(0) @db.Decimal(18, 4)
+  taxAmount         Decimal @default(0) @db.Decimal(18, 4)
+
+  netAmount        Decimal @db.Decimal(18, 4)
+  /// Signed operational corrections are separate from the base calculation.
+  adjustmentAmount Decimal @default(0) @db.Decimal(18, 4)
+  paidAmount       Decimal @default(0) @db.Decimal(18, 4)
+  waivedAmount     Decimal @default(0) @db.Decimal(18, 4)
+
+  status  DemandItemStatus @default(UNPAID)
+  dueDate DateTime?        @db.Date
+
+  calculation Json?
+  periodStart DateTime? @db.Date
+  periodEnd   DateTime? @db.Date
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  adjustments       FeeDemandItemAdjustment[]
+  responsibilities  FeeDemandResponsibility[]
+  allocations       PaymentAllocation[]
+  installmentItems  InstallmentItem[]
+  refundAllocations RefundAllocation[]
+  creditAllocations CreditAllocation[]
+  lateFeeAccruals   LateFeeAccrual[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, demandId])
+  @@index([tenantId, feeTypeId])
+  @@index([tenantId, status])
+  @@map("fee_demand_items")
+}
+
+/// Immutable per-item responsibility snapshot. The student is the residual
+/// payer after ordered configured rules have assigned other payer shares.
+model FeeDemandResponsibility {
+  id           String        @id @default(uuid()) @db.Uuid
+  tenantId     String        @db.Uuid
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  demandId     String        @db.Uuid
+  demand       FeeDemand     @relation(fields: [tenantId, demandId], references: [tenantId, id], onDelete: Restrict)
+  demandItemId String        @db.Uuid
+  demandItem   FeeDemandItem @relation(fields: [tenantId, demandItemId], references: [tenantId, id], onDelete: Restrict)
+
+  payerType       PayerType
+  payerName       String
+  payerSponsorId  String?                  @db.Uuid
+  sponsor         Sponsor?                 @relation("DemandResponsibilitySponsor", fields: [tenantId, payerSponsorId], references: [tenantId, id], onDelete: Restrict)
+  payerGuardianId String?                  @db.Uuid
+  payerGuardian   Guardian?                @relation("DemandResponsibilityGuardian", fields: [tenantId, payerGuardianId], references: [tenantId, id], onDelete: Restrict)
+  sourceRuleId    String?                  @db.Uuid
+  sourceRule      PayerResponsibilityRule? @relation(fields: [tenantId, sourceRuleId], references: [tenantId, id], onDelete: NoAction)
+  priority        Int                      @default(100)
+  amount          Decimal                  @db.Decimal(18, 4)
+  createdAt       DateTime                 @default(now())
+
+  allocations       PaymentAllocation[]
+  creditAllocations CreditAllocation[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, demandId])
+  @@index([tenantId, demandItemId])
+  @@index([tenantId, payerType, payerSponsorId])
+  @@index([tenantId, payerSponsorId])
+  @@index([tenantId, payerGuardianId])
+  @@index([tenantId, sourceRuleId])
+  @@map("fee_demand_responsibilities")
+}
+
+/// One row per applied adjustment, so "why is this fee 27,000?" is answerable
+/// line by line with rule identity, reason, approval and effective date.
+model FeeDemandItemAdjustment {
+  id           String        @id @default(uuid()) @db.Uuid
+  tenantId     String        @db.Uuid
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  demandItemId String        @db.Uuid
+  demandItem   FeeDemandItem @relation(fields: [tenantId, demandItemId], references: [tenantId, id], onDelete: Restrict)
+
+  direction AdjustmentDirection
+  code      String
+  label     String
+  /// Which engine stage produced it (BASE, SURCHARGE, SCHOLARSHIP, ...).
+  stage     String
+  sequence  Int
+
+  amount  Decimal  @db.Decimal(18, 4)
+  percent Decimal? @db.Decimal(9, 6)
+
+  basisAmount       Decimal? @db.Decimal(18, 4)
+  runningTotalAfter Decimal? @db.Decimal(18, 4)
+
+  policyId        String?       @db.Uuid
+  policyVersionId String?       @db.Uuid
+  policyName      String?
+  policyType      PolicyType?
+  stackingMode    StackingMode?
+
+  /// Which instrument row caused it (scholarship / discount / concession / waiver).
+  instrumentType String?
+  instrumentId   String? @db.Uuid
+
+  reason        String?
+  approvedBy    String?   @db.Uuid
+  approvedAt    DateTime?
+  effectiveFrom DateTime? @db.Date
+  effectiveTo   DateTime? @db.Date
+
+  /// Where the amount was clamped by a cap/floor action.
+  cappedBy String?
+  notes    String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([tenantId, demandItemId])
+  @@index([tenantId, code])
+  @@index([tenantId, policyId])
+  @@map("fee_demand_item_adjustments")
+}
+
+/// Traceable late-fee accrual. Late fee is a financial item of its own, not a
+/// silent mutation of the original demand.
+model LateFeeAccrual {
+  id             String         @id @default(uuid()) @db.Uuid
+  tenantId       String         @db.Uuid
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId       String?        @db.Uuid
+  branch         Branch?        @relation("LateFeeAccrualBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+  demandId       String         @db.Uuid
+  demand         FeeDemand      @relation(fields: [tenantId, demandId], references: [tenantId, id], onDelete: Restrict)
+  demandItemId   String?        @db.Uuid
+  demandItem     FeeDemandItem? @relation(fields: [tenantId, demandItemId], references: [tenantId, id], onDelete: Restrict)
+  resultDemandId String?        @db.Uuid
+  resultDemand   FeeDemand?     @relation("LateFeeResultDemand", fields: [tenantId, resultDemandId], references: [tenantId, id], onDelete: Restrict)
+
+  mode          LateFeeMode
+  daysLate      Int
+  graceDays     Int         @default(0)
+  rateApplied   Decimal?    @db.Decimal(18, 6)
+  baseAmount    Decimal     @db.Decimal(18, 4)
+  amount        Decimal     @db.Decimal(18, 4)
+  cappedBy      String?
+  calculatedFor DateTime    @db.Date
+  waivedAmount  Decimal     @default(0) @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now())
+  createdBy String?  @db.Uuid
+
+  @@unique([tenantId, demandItemId, calculatedFor])
+  @@unique([tenantId, id])
+  @@index([tenantId, demandId])
+  @@index([tenantId, demandItemId])
+  @@index([tenantId, resultDemandId])
+  @@index([tenantId, calculatedFor])
+  @@index([tenantId, branchId, calculatedFor])
+  @@map("late_fee_accruals")
+}
+
+// =====================================================================================
+// INSTALLMENTS
+// =====================================================================================
+
+model Installment {
+  id       String    @id @default(uuid()) @db.Uuid
+  tenantId String    @db.Uuid
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  demandId String    @db.Uuid
+  demand   FeeDemand @relation(fields: [tenantId, demandId], references: [tenantId, id], onDelete: Restrict)
+
+  label    String
+  basis    InstallmentBasis
+  sequence Int
+  dueDate  DateTime         @db.Date
+
+  amount           Decimal           @db.Decimal(18, 4)
+  /// Aggregate signed corrections allocated to this installment's fee items.
+  adjustmentAmount Decimal           @default(0) @db.Decimal(18, 4)
+  paidAmount       Decimal           @default(0) @db.Decimal(18, 4)
+  waivedAmount     Decimal           @default(0) @db.Decimal(18, 4)
+  status           InstallmentStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items              InstallmentItem[]
+  paymentAllocations PaymentAllocation[]
+  creditAllocations  CreditAllocation[]
+
+  @@unique([demandId, sequence])
+  @@unique([tenantId, id])
+  @@index([tenantId, status, dueDate])
+  @@index([tenantId, demandId])
+  @@map("installments")
+}
+
+model InstallmentItem {
+  id            String      @id @default(uuid()) @db.Uuid
+  tenantId      String      @db.Uuid
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  installmentId String      @db.Uuid
+  installment   Installment @relation(fields: [tenantId, installmentId], references: [tenantId, id], onDelete: Restrict)
+
+  feeTypeId        String         @db.Uuid
+  demandItemId     String?        @db.Uuid
+  demandItem       FeeDemandItem? @relation(fields: [tenantId, demandItemId], references: [tenantId, id], onDelete: Restrict)
+  amount           Decimal        @db.Decimal(18, 4)
+  /// Signed correction applied to this exact schedule share.
+  adjustmentAmount Decimal        @default(0) @db.Decimal(18, 4)
+  paidAmount       Decimal        @default(0) @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  adjustments Adjustment[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, installmentId])
+  @@index([tenantId, demandItemId])
+  @@map("installment_items")
+}
+
+// =====================================================================================
+// PAYMENT
+// =====================================================================================
+
+/// Payment order is the intent to pay, created before any money moves. It is
+/// gateway-agnostic; the gateway transaction is a separate record.
+model PaymentOrder {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  branchId String? @db.Uuid
+  branch   Branch? @relation("PaymentOrderBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  orderNumber            String
+  studentId              String?        @db.Uuid
+  admissionApplicationId String?        @db.Uuid
+  payerType              PayerType      @default(STUDENT)
+  payerName              String?
+  payerPhone             String?
+  payerEmail             String?
+  payerSponsorId         String?        @db.Uuid
+  payerGuardianId        String?        @db.Uuid
+  payerGuardian          Guardian?      @relation("PaymentOrderPayerGuardian", fields: [tenantId, payerGuardianId], references: [tenantId, id], onDelete: Restrict)
+  methodId               String?        @db.Uuid
+  paymentMethod          PaymentMethod? @relation(fields: [tenantId, methodId], references: [tenantId, id], onDelete: Restrict)
+
+  amount   Decimal @db.Decimal(18, 4)
+  currency String  @default("INR") @db.Char(3)
+
+  purpose String         @default("FEE_PAYMENT")
+  channel PaymentChannel
+  status  PaymentStatus  @default(CREATED)
+
+  gatewayConfigId String?             @db.Uuid
+  provider        GatewayProvider?
+  environment     GatewayEnvironment?
+  methodKind      PaymentMethodKind?
+
+  /// Explicit demand items the payer intends to settle. Allocation may reorder
+  /// these according to tenant policy, but the intent is recorded.
+  intendedDemandItemIds String[] @db.Uuid
+  /// Per-share reservation snapshot preventing concurrent manual/gateway collection.
+  responsibilityShares  Json?
+
+  expiresAt   DateTime?
+  completedAt DateTime?
+  cancelledAt DateTime?
+
+  /// Operational retry state for provider verification after the local
+  /// checkout deadline. These fields never change payment or ledger facts.
+  providerStatusAutoCheckAttempts Int       @default(0)
+  providerStatusCheckedAt         DateTime?
+  providerStatusNextCheckAt       DateTime?
+  providerStatusCheckLeaseUntil   DateTime?
+  providerStatusCheckLeaseId      String?   @db.Uuid
+
+  /// Client-supplied key making order creation idempotent.
+  idempotencyKey String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+
+  payments            Payment[]
+  gatewayTransactions GatewayTransaction[]
+
+  @@unique([tenantId, orderNumber])
+  @@unique([tenantId, idempotencyKey])
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, branchId])
+  @@index([tenantId, studentId])
+  @@index([tenantId, payerSponsorId])
+  @@index([tenantId, payerGuardianId])
+  @@index([tenantId, methodId])
+  @@map("payment_orders")
+}
+
+/// The immutable record of money received. Never edited after SUCCESS.
+model Payment {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Branch snapshot for accounting and access-control history.
+  branchId String? @db.Uuid
+  branch   Branch? @relation("PaymentBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  paymentNumber String
+  receiptNumber String?
+
+  studentId String?  @db.Uuid
+  student   Student? @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+
+  paymentOrderId String?       @db.Uuid
+  paymentOrder   PaymentOrder? @relation(fields: [tenantId, paymentOrderId], references: [tenantId, id], onDelete: NoAction)
+
+  channel    PaymentChannel
+  methodKind PaymentMethodKind
+  methodId   String?           @db.Uuid
+
+  // ---- payer: the person/organisation that paid, which may not be the student ----
+  payerType       PayerType @default(STUDENT)
+  payerName       String?
+  payerPhone      String?
+  payerEmail      String?
+  payerStudentId  String?   @db.Uuid
+  payerGuardianId String?   @db.Uuid
+  payerGuardian   Guardian? @relation("PaymentPayerGuardian", fields: [tenantId, payerGuardianId], references: [tenantId, id], onDelete: Restrict)
+  payerSponsorId  String?   @db.Uuid
+
+  currency String @default("INR") @db.Char(3)
+
+  amount            Decimal @db.Decimal(18, 4)
+  allocatedAmount   Decimal @default(0) @db.Decimal(18, 4)
+  unallocatedAmount Decimal @default(0) @db.Decimal(18, 4)
+  refundedAmount    Decimal @default(0) @db.Decimal(18, 4)
+  /// Convenience = amount - refundedAmount. Derived, never authoritative.
+  netAmount         Decimal @default(0) @db.Decimal(18, 4)
+
+  status PaymentStatus @default(CREATED)
+
+  paidAt    DateTime
+  /// Value date for accounting/reconciliation when it differs from paidAt.
+  valueDate DateTime? @db.Date
+
+  // ---- manual collection instrument details ----
+  referenceNumber  String?
+  instrumentNumber String?
+  bankName         String?
+  branchName       String?
+  instrumentDate   DateTime? @db.Date
+  clearanceStatus  String?
+  remarks          String?
+
+  isAdvancePayment Boolean @default(false)
+  isOverpayment    Boolean @default(false)
+
+  collectedBy String?   @db.Uuid
+  verifiedBy  String?   @db.Uuid
+  verifiedAt  DateTime?
+
+  /// Gateway correlation, denormalised for fast lookup; the authoritative row
+  /// is `GatewayTransaction`.
+  provider        GatewayProvider?
+  providerTxnId   String?
+  gatewayConfigId String?          @db.Uuid
+
+  reversalOfPaymentId String? @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+  updatedBy String?  @db.Uuid
+
+  allocations       PaymentAllocation[]
+  refundAllocations RefundAllocation[]
+  refunds           Refund[]
+  credits           Credit[]
+  receipts          Receipt[]
+  ledgerEntries     LedgerEntry[]
+
+  @@unique([tenantId, paymentNumber])
+  @@unique([tenantId, receiptNumber])
+  @@unique([tenantId, id])
+  @@index([tenantId, studentId, status])
+  @@index([tenantId, branchId, status])
+  @@index([tenantId, status, paidAt])
+  @@index([tenantId, paidAt])
+  @@index([tenantId, provider, providerTxnId])
+  @@index([tenantId, referenceNumber])
+  @@index([tenantId, channel])
+  @@index([tenantId, paymentOrderId])
+  @@index([tenantId, payerGuardianId])
+  @@map("payments")
+}
+
+/// Allocation is where a payment meets a demand item. One payment may settle
+/// many items and one item may be paid by many payments.
+model PaymentAllocation {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  paymentId        String                   @db.Uuid
+  payment          Payment                  @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: Restrict)
+  demandId         String?                  @db.Uuid
+  demandItemId     String?                  @db.Uuid
+  demandItem       FeeDemandItem?           @relation(fields: [tenantId, demandItemId], references: [tenantId, id], onDelete: Restrict)
+  installmentId    String?                  @db.Uuid
+  installment      Installment?             @relation(fields: [tenantId, installmentId], references: [tenantId, id], onDelete: Restrict)
+  responsibilityId String?                  @db.Uuid
+  responsibility   FeeDemandResponsibility? @relation(fields: [tenantId, responsibilityId], references: [tenantId, id], onDelete: Restrict)
+
+  amount         Decimal @db.Decimal(18, 4)
+  currency       String  @default("INR") @db.Char(3)
+  /// TARGETED (payer chose the item) or WATERFALL (policy-driven auto allocation).
+  allocationMode String  @default("WATERFALL")
+  sequence       Int     @default(0)
+  reason         String?
+
+  reversedAt      DateTime?
+  reversedBy      String?            @db.Uuid
+  reversalReason  String?
+  refundReversals RefundAllocation[]
+
+  createdAt DateTime @default(now())
+  createdBy String?  @db.Uuid
+
+  @@unique([tenantId, id])
+  @@index([tenantId, paymentId])
+  @@index([tenantId, demandItemId])
+  @@index([tenantId, demandId])
+  @@index([tenantId, installmentId])
+  @@index([tenantId, responsibilityId])
+  @@map("payment_allocations")
+}
+
+/// Tenant-defined payment methods. Cash always exists but UPI-to-VPA, cheque,
+/// DD, offline card and tenant-specific instruments are configuration.
+model PaymentMethod {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  kind                     PaymentMethodKind
+  name                     String
+  code                     String
+  requiresReference        Boolean           @default(false)
+  requiresInstrument       Boolean           @default(false)
+  enabledForManual         Boolean           @default(true)
+  enabledForOnline         Boolean           @default(false)
+  /// Provider used when this method is paid online (UPI -> Razorpay etc).
+  preferredGatewayConfigId String?           @db.Uuid
+  active                   Boolean           @default(true)
+  sortOrder                Int               @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  refunds       Refund[]
+  paymentOrders PaymentOrder[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@map("payment_methods")
+}
+
+model GatewayTransaction {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  paymentOrderId String?       @db.Uuid
+  paymentOrder   PaymentOrder? @relation(fields: [tenantId, paymentOrderId], references: [tenantId, id], onDelete: NoAction)
+  paymentId      String?       @db.Uuid
+
+  gatewayConfigId String                   @db.Uuid
+  provider        GatewayProvider
+  environment     GatewayEnvironment
+  status          GatewayTransactionStatus @default(CREATED)
+
+  providerOrderId   String?
+  providerTxnId     String?
+  providerPaymentId String?
+  providerSignature String?
+  providerStatusRaw String?
+
+  amount     Decimal            @db.Decimal(18, 4)
+  currency   String             @default("INR") @db.Char(3)
+  methodKind PaymentMethodKind?
+
+  // ---- gateway fee/settlement data, filled by settlement import ----
+  gatewayFee    Decimal?    @db.Decimal(18, 4)
+  gatewayTax    Decimal?    @db.Decimal(18, 4)
+  netSettlement Decimal?    @db.Decimal(18, 4)
+  settlementId  String?     @db.Uuid
+  settlement    Settlement? @relation(fields: [tenantId, settlementId], references: [tenantId, id], onDelete: NoAction)
+  settledAt     DateTime?
+
+  requestPayload  Json?
+  responsePayload Json?
+  errorCode       String?
+  errorMessage    String?
+
+  authorizedAt DateTime?
+  capturedAt   DateTime?
+  failedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Explicit names: the auto-generated names would collide once truncated.
+  @@unique([tenantId, provider, environment, providerOrderId], map: "gateway_txn_tenant_provider_env_order_key")
+  @@unique([tenantId, provider, environment, providerTxnId], map: "gateway_txn_tenant_provider_env_txn_key")
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, paymentOrderId])
+  @@index([tenantId, settlementId])
+  @@map("gateway_transactions")
+}
+
+/// Raw gateway webhook storage. Verified events are persisted before processing
+/// so a handler crash can never lose an event. Their deduplication key is scoped
+/// to tenant, provider, and gateway environment; unverified attempts do not
+/// reserve provider-controlled event IDs.
+model GatewayWebhook {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  provider        GatewayProvider
+  environment     GatewayEnvironment
+  externalEventId String
+  eventType       String?
+
+  signature      String?
+  signatureValid Boolean @default(false)
+  payload        Json
+  headers        Json?
+
+  processingStatus       WebhookProcessingStatus @default(RECEIVED)
+  attemptCount           Int                     @default(0)
+  lastError              String?
+  processedAt            DateTime?
+  /// Payment/gateway transaction produced by this event, if any.
+  resultingPaymentId     String?                 @db.Uuid
+  resultingTransactionId String?                 @db.Uuid
+  durationMs             Int?
+
+  receivedAt DateTime @default(now())
+
+  @@unique([tenantId, provider, environment, externalEventId], map: "gateway_webhook_tenant_provider_event_key", where: raw("\"signatureValid\" = true"))
+  @@unique([tenantId, id])
+  @@index([tenantId, processingStatus])
+  @@index([tenantId, receivedAt])
+  @@map("gateway_webhooks")
+}
+
+/// Generic request-level idempotency for money-moving endpoints. The unique
+/// constraint is what actually prevents a double charge under concurrency.
+model IdempotencyKey {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  key          String
+  scope        String
+  requestHash  String?
+  responseCode Int?
+  responseBody Json?
+  resourceType String?
+  resourceId   String? @db.Uuid
+  status       String  @default("IN_PROGRESS")
+
+  lockedAt    DateTime  @default(now())
+  completedAt DateTime?
+  expiresAt   DateTime
+
+  @@unique([tenantId, scope, key])
+  @@unique([tenantId, id])
+  @@index([tenantId, expiresAt])
+  @@map("idempotency_keys")
+}
+
+// =====================================================================================
+// REFUNDS, CREDITS, ADJUSTMENTS
+// =====================================================================================
+
+model Refund {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  branchId String? @db.Uuid
+  branch   Branch? @relation("RefundBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  refundNumber String
+  paymentId    String  @db.Uuid
+  payment      Payment @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: Restrict)
+
+  kind   RefundKind
+  status RefundStatus @default(REQUESTED)
+
+  amount   Decimal @db.Decimal(18, 4)
+  currency String  @default("INR") @db.Char(3)
+  reason   String
+
+  /// How the refund is delivered. GATEWAY uses the adapter, MANUAL is recorded
+  /// instrument-wise (cash/cheque/bank transfer).
+  methodKind           PaymentMethodKind
+  methodId             String?           @db.Uuid
+  paymentMethod        PaymentMethod?    @relation(fields: [tenantId, methodId], references: [tenantId, id], onDelete: Restrict)
+  referenceNumber      String?
+  instrumentNumber     String?
+  bankName             String?
+  providerRefundId     String?
+  gatewayTransactionId String?           @db.Uuid
+
+  /// When true the refund is parked as credit instead of leaving the platform.
+  toCreditBalance   Boolean @default(false)
+  resultingCreditId String? @db.Uuid
+
+  requestedBy   String?   @db.Uuid
+  approvedBy    String?   @db.Uuid
+  approvedAt    DateTime?
+  processedBy   String?   @db.Uuid
+  processedAt   DateTime?
+  failureReason String?
+
+  /// Demand items whose allocation is reduced by this refund.
+  reversalApplied Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  approvalRequestId   String?            @db.Uuid
+  allocationReversals RefundAllocation[]
+
+  @@unique([tenantId, refundNumber])
+  @@unique([tenantId, id])
+  @@index([tenantId, paymentId])
+  @@index([tenantId, methodId])
+  @@index([tenantId, status])
+  @@index([tenantId, branchId, status])
+  @@map("refunds")
+}
+
+/// Immutable amount-level reversal of an original payment allocation. Multiple
+/// rows let a payment be refunded in stages without mutating its allocations.
+model RefundAllocation {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  refundId            String  @db.Uuid
+  paymentId           String  @db.Uuid
+  paymentAllocationId String? @db.Uuid
+  creditAllocationId  String? @db.Uuid
+  creditId            String? @db.Uuid
+  demandId            String? @db.Uuid
+  demandItemId        String? @db.Uuid
+
+  payment           Payment            @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: Restrict)
+  refund            Refund             @relation(fields: [tenantId, refundId], references: [tenantId, id], onDelete: Restrict)
+  paymentAllocation PaymentAllocation? @relation(fields: [tenantId, paymentAllocationId], references: [tenantId, id], onDelete: Restrict)
+  creditAllocation  CreditAllocation?  @relation(fields: [tenantId, creditAllocationId], references: [tenantId, id], onDelete: Restrict)
+  credit            Credit?            @relation(fields: [tenantId, creditId], references: [tenantId, id], onDelete: Restrict)
+  demand            FeeDemand?         @relation(fields: [tenantId, demandId], references: [tenantId, id], onDelete: Restrict)
+  demandItem        FeeDemandItem?     @relation(fields: [tenantId, demandItemId], references: [tenantId, id], onDelete: Restrict)
+
+  amount    Decimal  @db.Decimal(18, 4)
+  createdAt DateTime @default(now())
+  createdBy String?  @db.Uuid
+
+  @@unique([tenantId, id])
+  @@index([tenantId, refundId])
+  @@index([tenantId, paymentId])
+  @@index([tenantId, paymentAllocationId])
+  @@index([tenantId, creditAllocationId])
+  @@index([tenantId, creditId])
+  @@index([tenantId, demandId])
+  @@index([tenantId, demandItemId])
+  @@map("refund_allocations")
+}
+
+/// A credit is money the institution holds for a student. It is a liability,
+/// not an income, and it is allocated to demands like a payment is.
+model Credit {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  branchId String? @db.Uuid
+  branch   Branch? @relation("CreditBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  studentId String?  @db.Uuid
+  student   Student? @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+
+  source   CreditSource
+  status   CreditStatus @default(AVAILABLE)
+  currency String       @default("INR") @db.Char(3)
+
+  originalAmount  Decimal @db.Decimal(18, 4)
+  allocatedAmount Decimal @default(0) @db.Decimal(18, 4)
+  availableAmount Decimal @db.Decimal(18, 4)
+  refundedAmount  Decimal @default(0) @db.Decimal(18, 4)
+
+  paymentId      String?  @db.Uuid
+  payment        Payment? @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: NoAction)
+  refundId       String?  @db.Uuid
+  sourceDemandId String?  @db.Uuid
+  sponsorId      String?  @db.Uuid
+
+  reason    String?
+  expiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+
+  allocations     CreditAllocation[]
+  refundReversals RefundAllocation[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, studentId, status])
+  @@index([tenantId, branchId, status])
+  @@index([tenantId, source])
+  @@index([tenantId, paymentId])
+  @@map("credits")
+}
+
+model CreditAllocation {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  creditId         String                   @db.Uuid
+  credit           Credit                   @relation(fields: [tenantId, creditId], references: [tenantId, id], onDelete: Restrict)
+  demandId         String?                  @db.Uuid
+  demandItemId     String?                  @db.Uuid
+  demandItem       FeeDemandItem?           @relation(fields: [tenantId, demandItemId], references: [tenantId, id], onDelete: Restrict)
+  installmentId    String?                  @db.Uuid
+  installment      Installment?             @relation(fields: [tenantId, installmentId], references: [tenantId, id], onDelete: Restrict)
+  responsibilityId String?                  @db.Uuid
+  responsibility   FeeDemandResponsibility? @relation(fields: [tenantId, responsibilityId], references: [tenantId, id], onDelete: Restrict)
+  refundReversals  RefundAllocation[]
+
+  amount   Decimal @db.Decimal(18, 4)
+  currency String  @default("INR") @db.Char(3)
+  sequence Int     @default(0)
+
+  reversedAt DateTime?
+  reason     String?
+
+  createdAt DateTime @default(now())
+  createdBy String?  @db.Uuid
+
+  @@unique([tenantId, id])
+  @@index([tenantId, creditId])
+  @@index([tenantId, demandItemId])
+  @@index([tenantId, installmentId])
+  @@index([tenantId, responsibilityId])
+  @@map("credit_allocations")
+}
+
+/// Operational correction of an issued demand. Financial history is never
+/// overwritten; an adjustment row explains the delta and who authorised it.
+model Adjustment {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  branchId String? @db.Uuid
+  branch   Branch? @relation("AdjustmentBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  adjustmentNumber  String
+  demandId          String?          @db.Uuid
+  demandItemId      String?          @db.Uuid
+  installmentItemId String?          @db.Uuid
+  installmentItem   InstallmentItem? @relation(fields: [tenantId, installmentItemId], references: [tenantId, id], onDelete: Restrict)
+  studentId         String?          @db.Uuid
+  paymentId         String?          @db.Uuid
+  creditId          String?          @db.Uuid
+
+  kind      AdjustmentKind
+  status    AdjustmentStatus    @default(DRAFT)
+  direction AdjustmentDirection
+
+  amount         Decimal @db.Decimal(18, 4)
+  currency       String  @default("INR") @db.Char(3)
+  reason         String
+  /// Optional link to the rule that justified it (waiver/discount policy).
+  policyId       String? @db.Uuid
+  instrumentType String?
+  instrumentId   String? @db.Uuid
+
+  reversalOfAdjustmentId String?   @db.Uuid
+  reversedAt             DateTime?
+  reversalReason         String?
+
+  requestedBy String?   @db.Uuid
+  approvedBy  String?   @db.Uuid
+  approvedAt  DateTime?
+  appliedAt   DateTime?
+
+  approvalRequestId String? @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+
+  @@unique([tenantId, adjustmentNumber])
+  @@unique([tenantId, reversalOfAdjustmentId])
+  @@unique([tenantId, id])
+  @@index([tenantId, demandId])
+  @@index([tenantId, installmentItemId])
+  @@index([tenantId, status])
+  @@index([tenantId, branchId, status])
+  @@index([tenantId, kind])
+  @@map("adjustments")
+}
+
+// =====================================================================================
+// LEDGER
+// =====================================================================================
+
+model LedgerAccount {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  code      String
+  name      String
+  type      LedgerAccountType
+  /// System accounts are created by the platform (STUDENT_RECEIVABLE, FEE_INCOME,
+  /// DISCOUNT_CONTRA, WAIVER_CONTRA, LATE_FEE_INCOME, GATEWAY_CLEARING, ...).
+  isSystem  Boolean           @default(false)
+  systemKey String?
+  active    Boolean           @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries LedgerEntry[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, systemKey])
+  @@unique([tenantId, id])
+  @@map("ledger_accounts")
+}
+
+/// Immutable, append-only ledger. Entries in one posting share a
+/// `transactionGroupId` and must balance (sum of debits == sum of credits).
+model LedgerEntry {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  branchId String? @db.Uuid
+  branch   Branch? @relation("LedgerEntryBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  accountId String        @db.Uuid
+  account   LedgerAccount @relation(fields: [tenantId, accountId], references: [tenantId, id], onDelete: Restrict)
+
+  transactionGroupId String @db.Uuid
+  sequence           Int    @default(0)
+
+  side     LedgerSide
+  amount   Decimal    @db.Decimal(18, 4)
+  currency String     @default("INR") @db.Char(3)
+
+  /// Business event that produced the posting: PAYMENT_RECEIVED,
+  /// FEE_DEMAND_ISSUED, DISCOUNT_GRANTED, REFUND_PAID, CREDIT_ISSUED, ...
+  eventType String
+  /// Journal date - the accounting date, which may differ from createdAt.
+  entryDate DateTime @db.Date
+  postedAt  DateTime @default(now())
+
+  studentId    String? @db.Uuid
+  demandId     String? @db.Uuid
+  demandItemId String? @db.Uuid
+  paymentId    String? @db.Uuid
+  refundId     String? @db.Uuid
+  creditId     String? @db.Uuid
+  adjustmentId String? @db.Uuid
+
+  narration String?
+  /// Optional payment object for gateway-clearing style entries.
+  payment   Payment? @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: Restrict)
+
+  status            LedgerEntryStatus @default(POSTED)
+  reversedByGroupId String?           @db.Uuid
+
+  createdBy String? @db.Uuid
+
+  @@unique([tenantId, id])
+  @@index([tenantId, transactionGroupId])
+  @@index([tenantId, accountId, entryDate])
+  @@index([tenantId, studentId, entryDate])
+  @@index([tenantId, eventType])
+  @@index([tenantId, paymentId])
+  @@index([tenantId, branchId, entryDate])
+  @@map("ledger_entries")
+}
+
+// =====================================================================================
+// RECEIPTS, INVOICES, DOCUMENTS
+// =====================================================================================
+
+model Receipt {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  branchId String? @db.Uuid
+  branch   Branch? @relation("ReceiptBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  receiptNumber String
+  paymentId     String   @db.Uuid
+  payment       Payment  @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: Restrict)
+  studentId     String?  @db.Uuid
+  student       Student? @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+
+  status    ReceiptStatus @default(GENERATED)
+  issueDate DateTime      @db.Date
+
+  /// Snapshot of branding/amounts at issue time: a receipt must reprint
+  /// identically years later even if the tenant re-brands.
+  snapshot Json
+
+  totalAmount   Decimal  @db.Decimal(18, 4)
+  currency      String   @default("INR") @db.Char(3)
+  balanceAfter  Decimal? @db.Decimal(18, 4)
+  amountInWords String?
+
+  pdfDocumentId    String?               @db.Uuid
+  emailedAt        DateTime?
+  printedAt        DateTime?
+  deliveryChannels NotificationChannel[]
+
+  voidedAt          DateTime?
+  voidReason        String?
+  voidedBy          String?   @db.Uuid
+  /// A correction receipt references the one it replaces.
+  replacesReceiptId String?   @db.Uuid
+
+  createdAt DateTime @default(now())
+  createdBy String?  @db.Uuid
+
+  lines ReceiptLine[]
+
+  @@unique([tenantId, receiptNumber])
+  @@unique([tenantId, id])
+  @@index([tenantId, studentId])
+  @@index([tenantId, issueDate])
+  @@index([tenantId, status])
+  @@index([tenantId, branchId, issueDate])
+  @@index([tenantId, paymentId])
+  @@map("receipts")
+}
+
+model ReceiptLine {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String  @db.Uuid
+  tenant    Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  receiptId String  @db.Uuid
+  receipt   Receipt @relation(fields: [tenantId, receiptId], references: [tenantId, id], onDelete: Restrict)
+
+  feeTypeCode     String
+  feeTypeName     String
+  description     String?
+  amount          Decimal @db.Decimal(18, 4)
+  allocatedAmount Decimal @db.Decimal(18, 4)
+  sequence        Int     @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([tenantId, receiptId])
+  @@map("receipt_lines")
+}
+
+model Invoice {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  branchId String? @db.Uuid
+  branch   Branch? @relation("InvoiceBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+
+  invoiceNumber String
+  studentId     String?    @db.Uuid
+  demandId      String?    @db.Uuid
+  demand        FeeDemand? @relation(fields: [tenantId, demandId], references: [tenantId, id], onDelete: NoAction)
+
+  status    InvoiceStatus @default(DRAFT)
+  issueDate DateTime      @db.Date
+  dueDate   DateTime      @db.Date
+
+  subtotal         Decimal @db.Decimal(18, 4)
+  discountAmount   Decimal @default(0) @db.Decimal(18, 4)
+  taxAmount        Decimal @default(0) @db.Decimal(18, 4)
+  totalAmount      Decimal @db.Decimal(18, 4)
+  /// Signed demand corrections; the original issue-time invoice snapshot stays intact.
+  adjustmentAmount Decimal @default(0) @db.Decimal(18, 4)
+  paidAmount       Decimal @default(0) @db.Decimal(18, 4)
+  currency         String  @default("INR") @db.Char(3)
+
+  snapshot      Json?
+  pdfDocumentId String? @db.Uuid
+  notes         String?
+
+  voidedAt   DateTime?
+  voidReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?  @db.Uuid
+
+  lines InvoiceLine[]
+
+  @@unique([tenantId, invoiceNumber])
+  @@unique([tenantId, demandId])
+  @@unique([tenantId, id])
+  @@index([tenantId, studentId])
+  @@index([tenantId, status])
+  @@index([tenantId, branchId, status])
+  @@index([tenantId, demandId])
+  @@map("invoices")
+}
+
+model InvoiceLine {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String  @db.Uuid
+  tenant    Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoiceId String  @db.Uuid
+  invoice   Invoice @relation(fields: [tenantId, invoiceId], references: [tenantId, id], onDelete: Restrict)
+
+  description String
+  feeTypeCode String?
+  quantity    Decimal  @default(1) @db.Decimal(12, 4)
+  unitAmount  Decimal  @db.Decimal(18, 4)
+  taxPercent  Decimal? @db.Decimal(9, 6)
+  amount      Decimal  @db.Decimal(18, 4)
+  sequence    Int      @default(0)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, invoiceId])
+  @@map("invoice_lines")
+}
+
+/// Registry of objects in S3/Azure Blob (logos, receipt PDFs, exports, student
+/// documents) so access can be authorised rather than guessed from a key.
+model Document {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  kind        String
+  bucket      String
+  objectKey   String
+  fileName    String
+  contentType String
+  sizeBytes   Int
+  checksum    String?
+
+  studentId   String? @db.Uuid
+  receiptId   String? @db.Uuid
+  reportJobId String? @db.Uuid
+
+  isPublic  Boolean   @default(false)
+  expiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  createdBy String?  @db.Uuid
+
+  @@unique([tenantId, bucket, objectKey])
+  @@unique([tenantId, id])
+  @@index([tenantId, kind])
+  @@map("documents")
+}
+
+// =====================================================================================
+// SETTLEMENT AND RECONCILIATION
+// =====================================================================================
+
+model Settlement {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  gatewayConfigId String             @db.Uuid
+  provider        GatewayProvider
+  environment     GatewayEnvironment
+
+  settlementReference String
+  settlementDate      DateTime @db.Date
+  grossAmount         Decimal  @db.Decimal(18, 4)
+  gatewayFee          Decimal  @default(0) @db.Decimal(18, 4)
+  gatewayTax          Decimal  @default(0) @db.Decimal(18, 4)
+  netAmount           Decimal  @db.Decimal(18, 4)
+  currency            String   @default("INR") @db.Char(3)
+  transactionCount    Int      @default(0)
+
+  status               SettlementStatus @default(IMPORTED)
+  sourceFileDocumentId String?          @db.Uuid
+  importedBy           String?          @db.Uuid
+  importedAt           DateTime         @default(now())
+  reconciledAt         DateTime?
+
+  transactions GatewayTransaction[]
+  records      ReconciliationRecord[]
+
+  @@unique([tenantId, provider, environment, settlementReference], map: "settlement_tenant_provider_env_ref_key")
+  @@unique([tenantId, id])
+  @@index([tenantId, settlementDate])
+  @@index([tenantId, status])
+  @@map("settlements")
+}
+
+model ReconciliationRecord {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  settlementId String?     @db.Uuid
+  settlement   Settlement? @relation(fields: [tenantId, settlementId], references: [tenantId, id], onDelete: Restrict)
+
+  gatewayTransactionId String? @db.Uuid
+  paymentId            String? @db.Uuid
+  refundId             String? @db.Uuid
+
+  status       ReconciliationStatus @default(OPEN)
+  /// GATEWAY_AMOUNT_MISMATCH, MISSING_IN_SYSTEM, MISSING_IN_SETTLEMENT,
+  /// FEE_MISMATCH, DUPLICATE_GATEWAY_TXN ...
+  mismatchType String?
+
+  expectedAmount Decimal? @db.Decimal(18, 4)
+  actualAmount   Decimal? @db.Decimal(18, 4)
+  difference     Decimal? @db.Decimal(18, 4)
+  currency       String   @default("INR") @db.Char(3)
+  actualCurrency String?  @db.Char(3)
+
+  notes      String?
+  resolvedBy String?   @db.Uuid
+  resolvedAt DateTime?
+  resolution String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, settlementId])
+  @@map("reconciliation_records")
+}
+
+// =====================================================================================
+// NOTIFICATIONS
+// =====================================================================================
+
+model NotificationTemplate {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  event     NotificationEvent
+  channel   NotificationChannel
+  locale    String              @default("en")
+  subject   String?
+  body      String
+  /// Handlebars-style variable names documented for the configuration UI.
+  variables String[]
+  active    Boolean             @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, event, channel, locale])
+  @@unique([tenantId, id])
+  @@map("notification_templates")
+}
+
+model Notification {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  event   NotificationEvent
+  channel NotificationChannel
+  status  NotificationStatus  @default(QUEUED)
+
+  recipientType String
+  recipientId   String? @db.Uuid
+  toAddress     String
+  subject       String?
+  body          String
+  payload       Json?
+
+  studentId String? @db.Uuid
+  paymentId String? @db.Uuid
+  demandId  String? @db.Uuid
+  receiptId String? @db.Uuid
+
+  providerMessageId String?
+  attemptCount      Int       @default(0)
+  lastError         String?
+  scheduledFor      DateTime?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+
+  dedupeKey String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, dedupeKey])
+  @@unique([tenantId, id])
+  @@index([tenantId, status, scheduledFor])
+  @@index([tenantId, event])
+  @@map("notifications")
+}
+
+// =====================================================================================
+// AUDIT, APPROVALS, JOBS, EVENTS, SEQUENCES
+// =====================================================================================
+
+model AuditLog {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  actorId    String?  @db.Uuid
+  actorType  String   @default("USER")
+  actorEmail String?
+  actorRoles String[]
+
+  action     String
+  entityType String
+  entityId   String?
+  entityRef  String?
+
+  before Json?
+  after  Json?
+  diff   Json?
+  reason String?
+
+  requestId String?
+  ipAddress String?
+  userAgent String?
+
+  severity String  @default("INFO")
+  /// Hash chain: prevHash + payload -> hash, making silent edits detectable.
+  prevHash String?
+  hash     String?
+
+  /// Version 1 rows are preserved as-is; signed database appends use version 2.
+  hashVersion      Int     @default(1)
+  chainSequence    BigInt?
+  appendNonce      String? @db.Uuid
+  canonicalPayload String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, chainSequence], map: "audit_logs_tenant_chain_sequence_key")
+  @@unique([tenantId, appendNonce], map: "audit_logs_tenant_append_nonce_key")
+  @@index([tenantId, createdAt])
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, actorId])
+  @@index([tenantId, action])
+  @@map("audit_logs")
+}
+
+/// Mutable head of the tenant's v2 signed audit chain. Runtime access is
+/// mediated by the audit-owner database wrappers, never by the Prisma model.
+model AuditChainHead {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @unique(map: "audit_chain_heads_tenant_id_key") @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, map: "audit_chain_heads_tenant_fkey")
+
+  lastSequence       BigInt   @default(0)
+  lastHash           String?
+  legacySnapshotHash String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([tenantId, id], map: "audit_chain_heads_tenant_id_id_key")
+  @@map("audit_chain_heads")
+}
+
+/// Versioned HMAC verifier keys held in the database for SECURITY DEFINER
+/// verification. This global relation is readable only by fee_audit_owner and
+/// the backup role; the matching API signer material is deployed separately.
+model AuditSigningKey {
+  keyVersion  Int       @id
+  keyMaterial Bytes     @db.ByteA
+  notBefore   DateTime
+  notAfter    DateTime?
+  retiredAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  requestNonces AuditRequestNonce[]
+
+  @@map("audit_signing_keys")
+}
+
+/// One-time signed API request claims. The table is owner-only and rows are
+/// retained through expiry plus the configured replay grace period.
+model AuditRequestNonce {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, map: "audit_request_nonces_tenant_fkey")
+
+  requestNonce      String          @db.Uuid
+  signingKeyVersion Int
+  signingKey        AuditSigningKey @relation(fields: [signingKeyVersion], references: [keyVersion], onDelete: Restrict, map: "audit_request_nonces_signing_key_fkey")
+  transactionId     BigInt
+  issuedAt          DateTime
+  expiresAt         DateTime
+  claimedAt         DateTime        @default(now())
+
+  @@unique([tenantId, id], map: "audit_request_nonces_tenant_id_id_key")
+  @@unique([tenantId, requestNonce], map: "audit_request_nonces_tenant_request_nonce_key")
+  @@index([expiresAt, signingKeyVersion], map: "audit_request_nonces_expiry_key_idx")
+  @@map("audit_request_nonces")
+}
+
+model ApprovalRequest {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  actionType ApprovalActionType
+  status     ApprovalStatus     @default(PENDING)
+
+  entityType String
+  entityId   String?  @db.Uuid
+  /// Payload to execute on approval - stored so execution is deterministic.
+  payload    Json
+  summary    String
+  amount     Decimal? @db.Decimal(18, 4)
+  currency   String?  @db.Char(3)
+
+  requestedBy     String?  @db.Uuid
+  requestedAt     DateTime @default(now())
+  requiredRole    String?  @db.VarChar(80)
+  thresholdAmount Decimal? @db.Decimal(18, 4)
+
+  decidedBy      String?   @db.Uuid
+  decidedAt      DateTime?
+  decisionNote   String?
+  executedAt     DateTime?
+  executionError String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, actionType, status])
+  @@map("approval_requests")
+}
+
+model ReportJob {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  kind      JobKind   @default(REPORT)
+  reportKey String
+  status    JobStatus @default(QUEUED)
+
+  parameters Json
+  /// Scope the report is *calculated* against, so historical reports stay
+  /// correct even after later adjustments.
+  asOfDate   DateTime? @db.Date
+  fromDate   DateTime? @db.Date
+  toDate     DateTime? @db.Date
+
+  rowCount         Int?
+  resultDocumentId String? @db.Uuid
+  errorMessage     String?
+  progress         Int     @default(0)
+
+  requestedBy String?   @db.Uuid
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, reportKey])
+  @@map("report_jobs")
+}
+
+model ExportJob {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  entity           String
+  format           String
+  status           JobStatus @default(QUEUED)
+  filters          Json?
+  rowCount         Int?
+  resultDocumentId String?   @db.Uuid
+  errorMessage     String?
+
+  requestedBy String?   @db.Uuid
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@map("export_jobs")
+}
+
+/// Transactional outbox. Domain events are written in the same transaction as
+/// the state change that produced them, then published by the worker. This is
+/// what makes later extraction into separate services safe.
+model OutboxEvent {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  eventType     String
+  aggregateType String
+  aggregateId   String?
+
+  payload     Json
+  status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  lastError   String?
+  availableAt DateTime     @default(now())
+  publishedAt DateTime?
+  /// Consumer-side idempotency: the same logical event is never handled twice.
+  dedupeKey   String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, dedupeKey])
+  @@unique([tenantId, id])
+  @@index([tenantId, status, availableAt])
+  @@map("outbox_events")
+}
+
+/// Tenant-scoped, gap-free-by-transaction number sequences. Receipt and invoice
+/// numbering is allocated inside the posting transaction so a receipt number is
+/// never issued for a payment that fails to commit.
+model Sequence {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  kind            SequenceKind
+  /// Settings version used to render this number. Existing version-1 rows are
+  /// preserved; future settings edits allocate new versioned rows.
+  formatVersion   Int          @default(1)
+  /// Null means the sequence is not scoped to a period (e.g. student numbers).
+  scope           String?
+  prefix          String
+  nextValue       BigInt       @default(1)
+  padding         Int          @default(6)
+  separator       String       @default("-")
+  resetAnnually   Boolean      @default(false)
+  lastResetPeriod String?
+  includeYear     Boolean      @default(true)
+  periodSegment   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, kind, formatVersion], where: { scope: null }, map: "sequences_tenant_kind_version_null_uq")
+  @@unique([tenantId, kind, scope, formatVersion], where: { scope: { not: null } }, map: "sequences_tenant_kind_scope_version_not_null_uq")
+  @@unique([tenantId, id])
+  @@map("sequences")
+}
+
+/// Migration-only journal for restartable CREATE/DROP INDEX CONCURRENTLY stages.
+/// Runtime API credentials receive no access to this operational metadata.
+model SchemaIndexBuild {
+  id             String                @id @default(uuid()) @db.Uuid
+  stageChecksum  String                @db.Char(64)
+  indexName      String
+  definitionHash String                @db.Char(64)
+  definition     String
+  attempt        Int                   @default(1)
+  state          SchemaIndexBuildState @default(RUNNING)
+  startedAt      DateTime              @default(now()) @db.Timestamptz(6)
+  completedAt    DateTime?             @db.Timestamptz(6)
+  errorCode      String?               @db.VarChar(64)
+
+  @@unique([stageChecksum, indexName, attempt])
+  @@index([stageChecksum, state])
+  @@map("schema_index_builds")
+}

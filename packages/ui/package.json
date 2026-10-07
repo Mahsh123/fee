@@ -1,0 +1,29 @@
+{
+  "name": "@fee/ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Accessible, primitives-based UI components shared across frontends.",
+  "main": "./src/index.ts",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config ../../vitest.config.mts",
+    "clean": "node ../../scripts/clean-workspace.mjs dist tsbuildinfo",
+    "test:watch": "vitest --config ../../vitest.config.mts"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.48.0",
+    "tailwind-merge": "^3.7.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.2"
+  }
+}

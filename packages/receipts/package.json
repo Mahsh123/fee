@@ -1,0 +1,29 @@
+{
+  "name": "@fee/receipts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Receipt and invoice document models plus PDF/HTML rendering.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config ../../vitest.config.mts",
+    "clean": "node ../../scripts/clean-workspace.mjs dist tsbuildinfo",
+    "test:watch": "vitest --config ../../vitest.config.mts"
+  },
+  "dependencies": {
+    "@fee/money": "*",
+    "@fee/types": "*",
+    "pdfkit": "^0.20.2"
+  },
+  "devDependencies": {
+    "@types/pdfkit": "^0.17.6",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.2"
+  }
+}

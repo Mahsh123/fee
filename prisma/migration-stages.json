@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "preIndexIndexBarriers": [
+    {
+      "beforeMigration": "20261001000200_refund_allocation_reversals",
+      "indexes": [
+        "payment_methods_tenantId_id_key",
+        "refunds_tenantId_id_key",
+        "payments_tenantId_id_key",
+        "payment_allocations_tenantId_id_key",
+        "credit_allocations_tenantId_id_key",
+        "credits_tenantId_id_key",
+        "fee_demands_tenantId_id_key",
+        "fee_demand_items_tenantId_id_key",
+        "installments_tenantId_id_key",
+        "fee_types_tenantId_id_key",
+        "installment_items_tenantId_id_key"
+      ]
+    }
+  ],
+  "postIndexIndexBarriers": [
+    {
+      "beforeMigration": "20261005000200_verified_webhook_event_deduplication",
+      "indexes": [
+        {
+          "indexName": "gateway_webhook_tenant_provider_event_verified_key",
+          "schemaIndexName": "gateway_webhook_tenant_provider_event_key"
+        }
+      ]
+    }
+  ],
+  "preIndexMigrations": [
+    "20260928000000_init",
+    "20260929000000_installment_rule_item_tenant_fk",
+    "20260929000100_tenant_reference_discriminators",
+    "20260929000200_schema_index_build_journal",
+    "20261001000100_payment_collection_approval",
+    "20261001000200_refund_allocation_reversals",
+    "20261001000300_installment_allocation_links",
+    "20261002000100_payment_order_method",
+    "20261002000200_invoice_demand_unique",
+    "20261002000300_late_fee_demand_links",
+    "20261002000400_late_fee_type_setting",
+    "20261002000500_late_fee_rate_precision",
+    "20261002000600_role_permission_configuration",
+    "20261002000650_tenant_numbering_reset_annual_compat_add",
+    "20261002000700_tenant_numbering_annual_effective_date",
+    "20261002000750_tenant_numbering_reset_annual_compat_drop",
+    "20261002000800_payment_order_payer_snapshot",
+    "20261002000900_unique_portal_subjects",
+    "20261002001000_financial_adjustment_lifecycle",
+    "20261002001100_benefit_assignment_controls",
+    "20261002001200_payer_responsibility",
+    "20261002001500_adjustment_sequence_benefit_caps",
+    "20261002001600_payer_guardian_identity",
+    "20261002001900_payment_payer_guardian_identity",
+    "20261003000600_fee_base_calculation_config",
+    "20261003000700_gateway_status_reconciliation_schedule",
+    "20261003000800_signed_audit_chain_foundation",
+    "20261006000100_platform_subscription_metadata",
+    "20261006000200_platform_admin_session_revocation",
+    "20261006000300_generic_saas_core",
+    "20261006000400_generic_saas_identity_guards",
+    "20261006000900_branch_finance_ownership",
+    "20261006001200_user_invitation_fields",
+    "20261006001300_user_invitation_token_index",
+    "20261007000100_user_email_change_fields",
+    "20261007000200_user_email_change_token_index"
+  ],
+  "postIndexMigrations": [
+    "20260930000100_tenant_composite_foreign_keys_add",
+    "20260930000200_tenant_composite_foreign_keys_validate",
+    "20260930000300_tenant_composite_foreign_keys_drop_legacy",
+    "20261002001300_payer_responsibility_fks",
+    "20261002001400_payer_responsibility_fks_validate",
+    "20261002001700_payer_guardian_identity_fks",
+    "20261002001800_payer_guardian_identity_fks_validate",
+    "20261002002000_payment_payer_guardian_identity_fk",
+    "20261002002100_payment_payer_guardian_identity_fk_validate",
+    "20261003000050_payer_responsibility_preflight_compat_add",
+    "20261003000100_payer_guardian_identity_preflight",
+    "20261003000150_payer_responsibility_preflight_compat_drop",
+    "20261003000200_gateway_unapplied_credit_source",
+    "20261003000300_reconciliation_actual_currency",
+    "20261003000400_tenant_identity_immutability",
+    "20261003000500_sequence_reservation",
+    "20261003000900_audit_tenant_identity_immutability",
+    "20261003001000_audit_append_boundary",
+    "20261005000100_tenant_landing_branding",
+    "20261005000200_verified_webhook_event_deduplication",
+    "20261006000500_tenant_domain_verification",
+    "20261006000600_generic_organization_branding",
+    "20261006000700_branding_trigger_security",
+    "20261006000800_platform_tenant_provisioning_idempotency",
+    "20261006001000_branch_finance_composite_foreign_keys_add",
+    "20261006001100_branch_finance_composite_foreign_keys_validate",
+    "20261007000300_tenant_public_registration"
+  ]
+}

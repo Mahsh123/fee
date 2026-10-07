@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Northstar Fitness">
+  <rect width="96" height="96" rx="24" fill="#143c3c"/>
+  <path d="M18 39h8v-8h10v34H26v-8h-8zm60 0h-8v-8H60v34h10v-8h8zM36 43h24v10H36z" fill="#e29b46"/>
+  <path d="M43 19h10v12H43zm0 46h10v12H43z" fill="#fff" opacity=".88"/>
+</svg>

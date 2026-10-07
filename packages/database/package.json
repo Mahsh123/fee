@@ -1,0 +1,33 @@
+{
+  "name": "@fee/database",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Prisma client lifecycle, transaction helpers and tenant-scoped repository primitives.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "generate": "prisma generate",
+    "prebuild": "prisma generate --schema ../../prisma/schema.prisma && node ../../scripts/generate-tenant-relations.mjs",
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config ../../vitest.config.mts",
+    "clean": "node ../../scripts/clean-workspace.mjs dist tsbuildinfo",
+    "test:watch": "vitest --config ../../vitest.config.mts"
+  },
+  "dependencies": {
+    "@fee/money": "*",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "prisma": "^7.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.2"
+  }
+}

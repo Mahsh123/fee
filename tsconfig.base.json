@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    // NestJS DI relies on emitted decorator metadata; class fields must not use define semantics
+    // or class-validator / Nest property decorators silently stop working on ES2022 targets.
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "useDefineForClassFields": false,
+    "strictPropertyInitialization": false,
+    "noUncheckedIndexedAccess": false,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@fee/money": ["packages/money/src/index.ts"],
+      "@fee/types": ["packages/types/src/index.ts"],
+      "@fee/validation": ["packages/validation/src/index.ts"],
+      "@fee/logger": ["packages/logger/src/index.ts"],
+      "@fee/dates": ["packages/dates/src/index.ts"],
+      "@fee/config": ["packages/config/src/index.ts"],
+      "@fee/fee-engine": ["packages/fee-engine/src/index.ts"],
+      "@fee/payment-contracts": ["packages/payment-contracts/src/index.ts"],
+      "@fee/database": ["packages/database/src/index.ts"],
+      "@fee/notifications": ["packages/notifications/src/index.ts"],
+      "@fee/receipts": ["packages/receipts/src/index.ts"],
+      "@fee/ui": ["packages/ui/src/index.ts"]
+    }
+  },
+  "exclude": ["node_modules", "dist", ".next"]
+}

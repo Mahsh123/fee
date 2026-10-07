@@ -1,0 +1,18 @@
+generator client {
+  provider = "prisma-client"
+  output   = "./generated-invalid"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model AcademicUnit {
+  id       String @id @db.Uuid
+  tenantId String @db.Uuid
+  parentId String? @db.Uuid
+  parent   AcademicUnit? @relation("Tree", fields: [tenantId, parentId], references: [tenantId, id], onDelete: SetNull)
+  children AcademicUnit[] @relation("Tree")
+
+  @@unique([tenantId, id])
+}

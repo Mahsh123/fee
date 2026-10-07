@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Demo Learning Academy">
+  <rect width="64" height="64" rx="16" fill="#2D7C72"/>
+  <path d="M12 27 32 15l20 12v21H12V27Z" fill="#fff" opacity=".96"/>
+  <path d="M24 48V34h16v14M8 28l24-15 24 15M19 29h26" fill="none" stroke="#17324D" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

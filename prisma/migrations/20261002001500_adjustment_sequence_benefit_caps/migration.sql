@@ -1,0 +1,7 @@
+ALTER TYPE "SequenceKind" ADD VALUE IF NOT EXISTS 'ADJUSTMENT';
+
+ALTER TABLE "waivers"
+  ADD COLUMN "maxAmount" DECIMAL(18,4);
+
+ALTER TABLE "surcharges"
+  ADD COLUMN "maxAmount" DECIMAL(18,4);
