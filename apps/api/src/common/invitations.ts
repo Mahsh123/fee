@@ -10,6 +10,15 @@ export type TenantInvitationEvent = {
   tokenHash: string;
 };
 
+export type PasswordResetEvent = {
+  tenantId: string;
+  userId: string;
+  email: string;
+  firstName: string;
+  resetUrl: string;
+  tokenHash: string;
+};
+
 /** Uses the configured origin, but pins the URL to the intended workspace or platform host. */
 export function buildUserInvitationUrl(configuredWebUrl: string, hostname: string, token: string, production: boolean): string {
   const url = new URL(configuredWebUrl);
@@ -25,6 +34,12 @@ export function buildUserInvitationUrl(configuredWebUrl: string, hostname: strin
 export function buildEmailChangeVerificationUrl(configuredWebUrl: string, hostname: string, token: string, production: boolean): string {
   const url = new URL(buildUserInvitationUrl(configuredWebUrl, hostname, token, production));
   url.pathname = '/verify-email-change';
+  return url.toString();
+}
+
+export function buildPasswordResetUrl(configuredWebUrl: string, hostname: string, token: string, production: boolean): string {
+  const url = new URL(buildUserInvitationUrl(configuredWebUrl, hostname, token, production));
+  url.pathname = '/reset-password';
   return url.toString();
 }
 
@@ -45,6 +60,17 @@ export async function enqueueUserEmailVerification(tx: TransactionClient, input:
       id: randomUUID(), tenantId: input.tenantId, eventType: 'USER_EMAIL_VERIFICATION', aggregateType: 'User', aggregateId: input.userId,
       payload: { userId: input.userId, email: input.email, firstName: input.firstName, acceptUrl: input.acceptUrl, tokenHash: input.tokenHash },
       dedupeKey: `user-email-verification:${input.userId}:${input.tokenHash.slice(0, 24)}`,
+    },
+  });
+}
+
+/** Stores password-reset delivery atomically with the one-time token. */
+export async function enqueuePasswordReset(tx: TransactionClient, input: PasswordResetEvent): Promise<void> {
+  await tx.outboxEvent.create({
+    data: {
+      id: randomUUID(), tenantId: input.tenantId, eventType: 'USER_PASSWORD_RESET', aggregateType: 'User', aggregateId: input.userId,
+      payload: { userId: input.userId, email: input.email, firstName: input.firstName, resetUrl: input.resetUrl, tokenHash: input.tokenHash },
+      dedupeKey: `user-password-reset:${input.userId}:${input.tokenHash.slice(0, 24)}`,
     },
   });
 }

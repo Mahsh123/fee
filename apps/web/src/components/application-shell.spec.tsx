@@ -37,8 +37,11 @@ describe('application hierarchy navigation', () => {
     expect(markup).toContain('ORGANIZATION &amp; ACCESS');
     expect(markup).toContain('Branches and groups');
     expect(markup).toContain('Users and roles');
+    expect(markup).toContain('aria-label="Breadcrumb"');
     expect(markup).not.toContain('Super Admins');
     expect(markup).not.toContain('Tenant directory');
+    expect(markup).not.toContain('Fee catalog');
+    expect(markup).not.toContain('Reports');
   });
 
   it('hides tenant navigation for modules excluded from the current plan', () => {
@@ -57,11 +60,26 @@ describe('application hierarchy navigation', () => {
     expect(markup).not.toContain('Reports');
   });
 
+  it('hides enabled tenant modules when the current role has no read permission', () => {
+    mockTenant.mockReturnValue({ kind: 'tenant', slug: 'northstar', name: 'Northstar', enabledModules: ['FEES', 'USERS'], branding: { organizationName: 'Northstar', email: null, logoUrl: null, primaryColor: '#047857', accentColor: '#064e3b', landingTitle: null, landingDescription: null, landingActionLabel: null } });
+    mockSession.mockReturnValue({
+      user: { id: 'tenant-member', tenantName: 'Northstar', firstName: 'Member', lastName: null, email: 'member@example.com', roles: ['TENANT_MEMBER'], permissions: ['user.read'], isPlatformAdmin: false, mustChangePassword: false } as ReturnType<typeof useSession>['user'],
+      loading: false,
+      update: () => undefined,
+    });
+
+    const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, 'Tenant content')));
+
+    expect(markup).not.toContain('Fee catalog');
+    expect(markup).not.toContain('Fee demands');
+    expect(markup).toContain('Users and roles');
+  });
+
   it('shows only platform control-plane navigation on the platform host', () => {
     mockPathname.mockReturnValue('/platform');
     mockTenant.mockReturnValue({ kind: 'platform' });
     mockSession.mockReturnValue({
-      user: { id: 'platform-admin', tenantName: 'Fee Platform', tenantSlug: PLATFORM_SYSTEM_TENANT_SLUG, firstName: 'Platform', lastName: 'Admin', email: 'platform@example.com', roles: ['PLATFORM_ADMIN'], permissions: [], isPlatformAdmin: true, mustChangePassword: false } as ReturnType<typeof useSession>['user'],
+      user: { id: 'platform-admin', tenantName: 'Wasl', tenantSlug: PLATFORM_SYSTEM_TENANT_SLUG, firstName: 'Platform', lastName: 'Admin', email: 'platform@example.com', roles: ['PLATFORM_ADMIN'], permissions: [], isPlatformAdmin: true, mustChangePassword: false } as ReturnType<typeof useSession>['user'],
       loading: false,
       update: () => undefined,
     });
@@ -69,19 +87,34 @@ describe('application hierarchy navigation', () => {
     const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, 'Platform content')));
 
     expect(markup).toContain('Platform control plane');
-    expect(markup).toContain('Tenant directory');
+    expect(markup).toContain('Organisations');
     expect(markup).toContain('Provision a tenant');
-    expect(markup).toContain('Super Admins');
-    expect(markup).toContain('href="/platform#overview"');
+    expect(markup).toContain('Platform admins');
+    expect(markup).toContain('href="/platform/tenants"');
+    expect(markup).toContain('href="/platform/provision"');
     expect(markup).not.toContain('Students');
     expect(markup).not.toContain('Fee demands');
+  });
+
+  it('uses the configured generic group terminology for a training organisation', () => {
+    mockPathname.mockReturnValue('/organization');
+    mockTenant.mockReturnValue({ kind: 'tenant', slug: 'northstar', name: 'Northstar', organizationCategory: 'tuition_centre', enabledModules: ['BRANCHES', 'ORGANIZATION'], branding: { organizationName: 'Northstar', email: null, logoUrl: null, primaryColor: '#123456', accentColor: '#654321', landingTitle: null, landingDescription: null, landingActionLabel: null } });
+    mockSession.mockReturnValue({
+      user: { id: 'tenant-admin', tenantName: 'Northstar', firstName: 'Admin', lastName: null, email: 'admin@example.com', roles: ['TENANT_ADMIN'], permissions: ['branch.read'], isPlatformAdmin: false, mustChangePassword: false } as ReturnType<typeof useSession>['user'],
+      loading: false,
+      update: () => undefined,
+    });
+
+    const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, 'Tenant content')));
+
+    expect(markup).toContain('Branches and batches');
   });
 
   it('does not render tenant navigation for a platform account on a tenant host', () => {
     mockPathname.mockReturnValue('/organization');
     mockTenant.mockReturnValue({ kind: 'tenant', slug: 'northstar', name: 'Northstar', enabledModules: ['BRANCHES', 'ORGANIZATION', 'ASSIGNMENTS', 'USERS', 'ADMISSIONS', 'PORTAL', 'FEES', 'PAYMENTS', 'REPORTS', 'NOTIFICATIONS'], branding: { organizationName: 'Northstar', email: null, logoUrl: null, primaryColor: '#123456', accentColor: '#654321', landingTitle: null, landingDescription: null, landingActionLabel: null } });
     mockSession.mockReturnValue({
-      user: { id: 'platform-admin', tenantName: 'Fee Platform', tenantSlug: PLATFORM_SYSTEM_TENANT_SLUG, firstName: 'Platform', lastName: 'Admin', email: 'platform@example.com', roles: ['PLATFORM_ADMIN'], permissions: [], isPlatformAdmin: true, mustChangePassword: false } as ReturnType<typeof useSession>['user'],
+      user: { id: 'platform-admin', tenantName: 'Wasl', tenantSlug: PLATFORM_SYSTEM_TENANT_SLUG, firstName: 'Platform', lastName: 'Admin', email: 'platform@example.com', roles: ['PLATFORM_ADMIN'], permissions: [], isPlatformAdmin: true, mustChangePassword: false } as ReturnType<typeof useSession>['user'],
       loading: false,
       update: () => undefined,
     });
@@ -130,6 +163,16 @@ describe('application hierarchy navigation', () => {
     const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, 'Invitation registration form')));
 
     expect(markup).toContain('Invitation registration form');
+    expect(markup).not.toContain('Taking you to sign in');
+  });
+
+  it.each(['/forgot-password', '/reset-password'])('allows public password recovery at %s without requiring an existing sign-in', (path) => {
+    mockPathname.mockReturnValue(path);
+    mockTenant.mockReturnValue({ kind: 'tenant', slug: 'northstar', name: 'Northstar', enabledModules: ['USERS'], branding: { organizationName: 'Northstar', email: null, logoUrl: null, primaryColor: '#123456', accentColor: '#654321', landingTitle: null, landingDescription: null, landingActionLabel: null } });
+    mockSession.mockReturnValue({ user: null, loading: false, update: () => undefined });
+    const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, `Public recovery ${path}`)));
+
+    expect(markup).toContain(`Public recovery ${path}`);
     expect(markup).not.toContain('Taking you to sign in');
   });
 

@@ -4,6 +4,7 @@ import { PrismaModule, PrismaService } from '../common/prisma.service';
 import { Public, TenantContextModule, TenantContextService } from '../common/tenancy';
 import type { RequestWithContext } from '../common/errors';
 import { resolveTenantModuleAccess } from '../common/entitlements';
+import { normalizeOrganizationCategory, organizationCategoryDisplayName, type OrganizationCategoryKey } from '@fee/types';
 
 export type PublicTenantContext =
   | { kind: 'platform' }
@@ -13,6 +14,9 @@ export type PublicTenantContext =
       kind: 'tenant';
       name: string;
       slug: string;
+      organizationCategory: OrganizationCategoryKey;
+      organizationTypeLabel: string;
+      timezone: string;
       enabledModules: string[];
       allowPublicRegistration: boolean;
       branding: {
@@ -40,7 +44,7 @@ export class PublicTenantContextService {
     }
 
     const current = this.tenantContext.peek();
-    const [branding, settings, moduleAccess] = await this.tenantContext.run(
+    const [branding, settings, moduleAccess, tenant] = await this.tenantContext.run(
       { ...(current ?? { requestId: request.requestId ?? 'unknown' }), tenantId: host.tenantId, isPlatformAdmin: false },
       // Prisma returns a lazy thenable. Await it before leaving the tenant scope
       // so the tenant-scoped database extension sees the resolved host tenant.
@@ -60,9 +64,10 @@ export class PublicTenantContextService {
         }),
         this.prisma.db.tenantSettings.findUnique({
           where: { tenantId: host.tenantId },
-          select: { allowPublicRegistration: true },
+          select: { allowPublicRegistration: true, timezone: true },
         }),
         resolveTenantModuleAccess(this.prisma.db, host.tenantId),
+        this.prisma.db.tenant.findUnique({ where: { id: host.tenantId }, select: { organizationType: true } }),
       ]),
     );
 
@@ -70,6 +75,9 @@ export class PublicTenantContextService {
       kind: 'tenant',
       name: host.name,
       slug: host.slug,
+      organizationCategory: normalizeOrganizationCategory(tenant?.organizationType),
+      organizationTypeLabel: organizationCategoryDisplayName(tenant?.organizationType),
+      timezone: settings?.timezone ?? 'Asia/Kolkata',
       enabledModules: moduleAccess?.enabledModules ?? [],
       allowPublicRegistration: settings?.allowPublicRegistration ?? false,
       branding: {

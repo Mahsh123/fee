@@ -35,10 +35,6 @@ const defaultRedactPaths = [
   '*.AUDIT_SIGNING_KEYS_JSON',
   'NOTIFICATION_WORKER_HMAC_SECRET',
   '*.NOTIFICATION_WORKER_HMAC_SECRET',
-  'S3_ACCESS_KEY_ID',
-  '*.S3_ACCESS_KEY_ID',
-  'S3_SECRET_ACCESS_KEY',
-  '*.S3_SECRET_ACCESS_KEY',
   'SMTP_PASSWORD',
   '*.SMTP_PASSWORD',
   'RAZORPAY_KEY_SECRET',
@@ -67,10 +63,6 @@ const defaultRedactPaths = [
   '*.SEED_PLATFORM_ADMIN_PASSWORD',
   'SEED_DEMO_PASSWORD',
   '*.SEED_DEMO_PASSWORD',
-  'SENTRY_DSN',
-  '*.SENTRY_DSN',
-  'OTEL_EXPORTER_OTLP_ENDPOINT',
-  '*.OTEL_EXPORTER_OTLP_ENDPOINT',
 ];
 
 /** Creates a structured application logger with secret redaction enabled by default. */

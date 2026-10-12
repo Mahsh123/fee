@@ -409,6 +409,13 @@ enum ReceiptStatus {
   VOID
 }
 
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
 enum InvoiceStatus {
   DRAFT
   ISSUED
@@ -453,6 +460,7 @@ enum NotificationStatus {
 enum NotificationEvent {
   USER_INVITATION
   USER_EMAIL_VERIFICATION
+  USER_PASSWORD_RESET
   PAYMENT_SUCCESS
   PAYMENT_FAILED
   PAYMENT_PENDING
@@ -656,6 +664,8 @@ model Tenant {
   refreshTokens             RefreshToken[]
   academicYears             AcademicYear[]
   academicUnits             AcademicUnit[]
+  attendanceSessions        AttendanceSession[]
+  attendanceRecords         AttendanceRecord[]
   students                  Student[]
   studentUnitMemberships    StudentUnitMembership[]
   guardians                 Guardian[]
@@ -896,6 +906,7 @@ model Branch {
   receipts        Receipt[]              @relation("ReceiptBranch")
   invoices        Invoice[]              @relation("InvoiceBranch")
   lateFeeAccruals LateFeeAccrual[]       @relation("LateFeeAccrualBranch")
+  attendanceSessions AttendanceSession[] @relation("AttendanceBranch")
 
   @@unique([tenantId, code])
   @@unique([tenantId, id])
@@ -1277,6 +1288,8 @@ model User {
   invitationTokenHash String?   @unique @db.VarChar(64)
   invitationExpiresAt DateTime?
   emailVerifiedAt     DateTime?
+  passwordResetTokenHash String?   @unique @db.VarChar(64)
+  passwordResetExpiresAt DateTime?
   pendingEmail        String?   @db.VarChar(254)
   emailChangeTokenHash String?  @unique @db.VarChar(64)
   emailChangeExpiresAt DateTime?
@@ -1302,6 +1315,8 @@ model User {
   userRoles               UserRole[]
   refreshTokens           RefreshToken[]
   branchMemberships       UserBranchMembership[]
+  attendanceSessionsMarked AttendanceSession[] @relation("AttendanceMarkedBy")
+  attendanceRecordsUpdated AttendanceRecord[] @relation("AttendanceRecordUpdatedBy")
   managedBranches         Branch[]                     @relation("BranchManager")
   organizationMemberships UserOrganizationMembership[]
   assignments             UserAssignment[]
@@ -1471,6 +1486,7 @@ model AcademicUnit {
   deletedAt DateTime?
 
   memberships StudentUnitMembership[]
+  attendanceSessions AttendanceSession[]
 
   @@unique([tenantId, unitType, code])
   @@unique([tenantId, id])
@@ -1540,6 +1556,7 @@ model Student {
   benefitAssignments       BenefitAssignment[]
   feeOverrides             FeeOverride[]
   payerResponsibilityRules PayerResponsibilityRule[]
+  attendanceRecords        AttendanceRecord[]
 
   @@unique([tenantId, admissionNumber])
   @@unique([tenantId, id])
@@ -1623,6 +1640,61 @@ model StudentGuardian {
   @@index([tenantId, studentId])
   @@index([tenantId, guardianId])
   @@map("student_guardians")
+}
+
+/// Optional education/workforce attendance session, scoped to one tenant branch and group.
+model AttendanceSession {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  branchId String @db.Uuid
+  branch   Branch @relation("AttendanceBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+  academicUnitId String @db.Uuid
+  academicUnit   AcademicUnit @relation(fields: [tenantId, academicUnitId], references: [tenantId, id], onDelete: Restrict)
+
+  attendanceDate DateTime @db.Date
+  sessionLabel String @default("FULL_DAY") @db.VarChar(40)
+  idempotencyKey String @db.VarChar(200)
+  requestFingerprint String @db.Char(64)
+  markedBy String @db.Uuid
+  marker User @relation("AttendanceMarkedBy", fields: [tenantId, markedBy], references: [tenantId, id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  records AttendanceRecord[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, idempotencyKey])
+  @@unique([tenantId, branchId, academicUnitId, attendanceDate, sessionLabel])
+  @@index([tenantId, academicUnitId, attendanceDate])
+  @@index([tenantId, branchId, attendanceDate])
+  @@index([tenantId, markedBy])
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessionId String @db.Uuid
+  session AttendanceSession @relation(fields: [tenantId, sessionId], references: [tenantId, id], onDelete: Cascade)
+  studentId String @db.Uuid
+  student Student @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Cascade)
+
+  status AttendanceStatus
+  remarks String? @db.VarChar(500)
+  updatedBy String? @db.Uuid
+  updater User? @relation("AttendanceRecordUpdatedBy", fields: [tenantId, updatedBy], references: [tenantId, id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, id])
+  @@unique([sessionId, studentId])
+  @@index([tenantId, sessionId])
+  @@index([tenantId, studentId, createdAt])
+  @@index([tenantId, updatedBy])
+  @@map("attendance_records")
 }
 
 model StudentGroup {

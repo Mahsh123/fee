@@ -1,6 +1,7 @@
 'use client';
 
 import type { ApiResponse } from '@fee/types';
+import type { OrganizationCategoryKey } from '@fee/types';
 
 export interface SessionUser {
   id: string;
@@ -47,6 +48,8 @@ export type PublicTenantContext =
       slug: string;
       name: string;
       enabledModules: string[];
+      organizationCategory?: OrganizationCategoryKey;
+      organizationTypeLabel?: string;
       allowPublicRegistration?: boolean;
       branding: {
         organizationName: string;

@@ -17,8 +17,8 @@ async function main(): Promise<void> {
   try {
     const tenant = await client.tenant.upsert({
       where: { slug: PLATFORM_SYSTEM_TENANT_SLUG },
-      create: { slug: PLATFORM_SYSTEM_TENANT_SLUG, name: 'Fee Platform', status: 'ACTIVE' },
-      update: { status: 'ACTIVE' },
+      create: { slug: PLATFORM_SYSTEM_TENANT_SLUG, name: 'Wasl', status: 'ACTIVE' },
+      update: { name: 'Wasl', status: 'ACTIVE' },
       select: { id: true },
     });
 
@@ -32,7 +32,7 @@ async function main(): Promise<void> {
       where: { key: 'starter' },
       create: {
         key: 'starter', name: 'Starter', description: 'Default trial plan for new organizations.',
-        monthlyPrice: 0, yearlyPrice: 0, currency: 'USD', trialDays: 14, active: true,
+        monthlyPrice: 0, yearlyPrice: 0, currency: 'INR', trialDays: 14, active: true,
       },
       update: { active: true },
       select: { id: true },

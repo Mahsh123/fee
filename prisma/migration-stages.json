@@ -65,7 +65,8 @@
     "20261006001200_user_invitation_fields",
     "20261006001300_user_invitation_token_index",
     "20261007000100_user_email_change_fields",
-    "20261007000200_user_email_change_token_index"
+    "20261007000200_user_email_change_token_index",
+    "20261012000100_user_password_reset"
   ],
   "postIndexMigrations": [
     "20260930000100_tenant_composite_foreign_keys_add",

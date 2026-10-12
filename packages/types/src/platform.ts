@@ -7,7 +7,7 @@ export type SaasAccessTier = (typeof SAAS_ACCESS_TIERS)[number];
 /** Platform-managed module keys. Tenant/plan records may add custom modules without imposing an industry taxonomy. */
 export const PLATFORM_MODULES = [
   'USERS', 'BRANCHES', 'ORGANIZATION', 'ASSIGNMENTS', 'REPORTS', 'NOTIFICATIONS',
-  'FEES', 'PAYMENTS', 'ADMISSIONS', 'PORTAL', 'ANALYTICS',
+  'FEES', 'PAYMENTS', 'ADMISSIONS', 'ATTENDANCE', 'PORTAL', 'ANALYTICS',
 ] as const;
 export type PlatformModule = (typeof PLATFORM_MODULES)[number];
 
@@ -19,6 +19,7 @@ export type CoreTenantModule = (typeof CORE_TENANT_MODULES)[number];
 export const TENANT_MODULE_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   FEES: ['PAYMENTS'],
   PORTAL: ['PAYMENTS'],
+  ATTENDANCE: ['ADMISSIONS'],
 });
 
 export function missingTenantModuleDependencies(moduleKeys: readonly string[]): string[] {
@@ -38,9 +39,77 @@ export const PLATFORM_MODULE_LABELS: Record<PlatformModule, string> = {
   FEES: 'Fees',
   PAYMENTS: 'Payments',
   ADMISSIONS: 'Admissions',
+  ATTENDANCE: 'Attendance',
   PORTAL: 'User portal',
   ANALYTICS: 'Analytics',
 };
+
+/**
+ * Stable organisation categories used to configure the generic tenant
+ * workspace. Labels and suggestions live in one shared catalog so the web
+ * client and API never maintain competing category lists.
+ */
+export const ORGANIZATION_CATEGORY_KEYS = [
+  'school', 'madrasa', 'tuition_centre', 'coaching_centre', 'academy', 'college',
+  'training_institute', 'club_association', 'gym_fitness', 'company', 'ngo', 'other_organisation',
+] as const;
+export type OrganizationCategoryKey = (typeof ORGANIZATION_CATEGORY_KEYS)[number];
+
+type OrganizationCategoryDefinition = {
+  key: OrganizationCategoryKey;
+  label: string;
+  description: string;
+  peopleLabel: string;
+  groupLabel: string;
+  suggestedModules: readonly PlatformModule[];
+};
+
+export const ORGANIZATION_CATEGORIES = [
+  { key: 'school', label: 'School', description: 'An education workspace for school operations.', peopleLabel: 'Students', groupLabel: 'Classes and sections', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'madrasa', label: 'Madrasa', description: 'An education workspace with configurable groups and fee collection.', peopleLabel: 'Students', groupLabel: 'Classes and groups', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'tuition_centre', label: 'Tuition Centre', description: 'An education workspace organised around batches.', peopleLabel: 'Students', groupLabel: 'Batches', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'coaching_centre', label: 'Coaching Centre', description: 'An education workspace organised around batches and admissions.', peopleLabel: 'Students', groupLabel: 'Batches', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'academy', label: 'Academy', description: 'A configurable training or education workspace.', peopleLabel: 'Students', groupLabel: 'Groups', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'ANALYTICS'] },
+  { key: 'college', label: 'College', description: 'An education workspace with configurable academic groups.', peopleLabel: 'Students', groupLabel: 'Classes and groups', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'training_institute', label: 'Training Institute', description: 'A training workspace organised around groups or batches.', peopleLabel: 'Learners', groupLabel: 'Batches and groups', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'ANALYTICS'] },
+  { key: 'club_association', label: 'Club or Association', description: 'A member-oriented workspace using generic users and groups.', peopleLabel: 'Members', groupLabel: 'Groups', suggestedModules: ['FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'gym_fitness', label: 'Gym or Fitness Centre', description: 'A member-oriented workspace using generic users and groups.', peopleLabel: 'Members', groupLabel: 'Groups', suggestedModules: ['FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'company', label: 'Company', description: 'A general organisation workspace for people, branches, and groups.', peopleLabel: 'People', groupLabel: 'Departments and groups', suggestedModules: ['ANALYTICS'] },
+  { key: 'ngo', label: 'NGO', description: 'A general organisation workspace for people, branches, and groups.', peopleLabel: 'Members', groupLabel: 'Groups', suggestedModules: ['FEES', 'PAYMENTS', 'ANALYTICS'] },
+  { key: 'other_organisation', label: 'Other Organisation', description: 'A general-purpose workspace with configurable people and groups.', peopleLabel: 'People', groupLabel: 'Groups', suggestedModules: ['ANALYTICS'] },
+] as const satisfies readonly OrganizationCategoryDefinition[];
+
+const ORGANIZATION_CATEGORY_ALIASES: Readonly<Record<string, OrganizationCategoryKey>> = Object.freeze({
+  organization: 'other_organisation', organisation: 'other_organisation',
+  'tuition centre': 'tuition_centre', 'tuition center': 'tuition_centre',
+  'coaching centre': 'coaching_centre', 'coaching center': 'coaching_centre',
+  'club or association': 'club_association', 'club/association': 'club_association', club: 'club_association', association: 'club_association',
+  gym: 'gym_fitness', fitness: 'gym_fitness', 'fitness centre': 'gym_fitness', 'fitness center': 'gym_fitness',
+  company: 'company', ngo: 'ngo', school: 'school', madrasa: 'madrasa', academy: 'academy', college: 'college',
+  'training institute': 'training_institute', 'other organisation': 'other_organisation', 'other organization': 'other_organisation',
+});
+
+export function normalizeOrganizationCategory(value: string | null | undefined): OrganizationCategoryKey {
+  const normalized = (value ?? '').trim().toLowerCase().replace(/[_-]+/g, ' ');
+  const aliased = ORGANIZATION_CATEGORY_ALIASES[normalized];
+  if (aliased) return aliased;
+  const exact = ORGANIZATION_CATEGORY_KEYS.find((key) => key === (value ?? '').trim().toLowerCase());
+  return exact ?? 'other_organisation';
+}
+
+export function organizationCategory(key: string | null | undefined): (typeof ORGANIZATION_CATEGORIES)[number] {
+  const normalized = normalizeOrganizationCategory(key);
+  return ORGANIZATION_CATEGORIES.find((category) => category.key === normalized) ?? ORGANIZATION_CATEGORIES[ORGANIZATION_CATEGORIES.length - 1]!;
+}
+
+/** Display known categories by their shared label and preserve custom labels. */
+export function organizationCategoryDisplayName(value: string | null | undefined): string {
+  const raw = value?.trim() ?? '';
+  if (!raw) return organizationCategory('other_organisation').label;
+  const lookupKey = raw.toLowerCase().replace(/[_-]+/g, ' ');
+  const isKnown = ORGANIZATION_CATEGORY_KEYS.some((key) => key === raw.toLowerCase()) || ORGANIZATION_CATEGORY_ALIASES[lookupKey] !== undefined;
+  return isKnown ? organizationCategory(raw).label : raw;
+}
 
 export function accessTierForRoles(roleKeys: readonly string[], isPlatformAdmin = false): SaasAccessTier {
   if (isPlatformAdmin && roleKeys.includes('PLATFORM_ADMIN')) return 'SUPER_ADMIN';

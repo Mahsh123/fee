@@ -1,11 +1,17 @@
 import { CORE_TENANT_MODULES, missingTenantModuleDependencies, SUBSCRIPTION_STATUSES, TENANT_STATUSES } from '@fee/types';
 import { z } from 'zod';
 
+export const tenantSlugSchema = z.string().trim().toLowerCase().min(2).max(63).regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use lowercase letters, numbers, and hyphens.');
+export const tenantSlugAvailabilitySchema = z.object({ slug: tenantSlugSchema });
+
 export const provisionTenantSchema = z.object({
   name: z.string().trim().min(2).max(160),
+  slug: tenantSlugSchema.optional(),
   planId: z.string().uuid().optional(),
   billingInterval: z.enum(['MONTHLY', 'YEARLY', 'MANUAL']).optional(),
-  organizationType: z.string().trim().min(2).max(80).default('ORGANIZATION'),
+  // Known IDs use the shared catalog; custom labels remain extensible in the
+  // existing tenant text field without adding a category table or migration.
+  organizationType: z.string().trim().min(2).max(80).default('other_organisation'),
   enabledModules: z.array(z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9_.-]{0,79}$/)).max(100)
     .refine((keys) => new Set(keys).size === keys.length, 'Each enabled module can only be selected once.')
     .refine((keys) => CORE_TENANT_MODULES.every((key) => keys.includes(key)), 'Every workspace must include the core tenant modules.')
@@ -99,11 +105,10 @@ export const updatePlatformRefundStatusSchema = z.object({
   externalRefundId: z.string().trim().min(1).max(200).nullable().optional(),
 }).refine((value) => value.status !== 'PROCESSED' || Boolean(value.externalRefundId), 'Enter the external refund reference after processing it with the payment provider.');
 
-const slugSchema = z.string().trim().toLowerCase().min(2).max(63).regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use lowercase letters, numbers, and hyphens.');
 export const updateTenantProfileSchema = z.object({
   name: z.string().trim().min(2).max(160).optional(),
   organizationType: z.string().trim().min(2).max(80).optional(),
-  slug: slugSchema.optional(),
+  slug: tenantSlugSchema.optional(),
   contactEmail: z.string().trim().email().max(254).transform((value) => value.toLowerCase()).nullable().optional(),
   contactPhone: z.string().trim().max(32).nullable().optional(),
   countryCode: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/).nullable().optional(),

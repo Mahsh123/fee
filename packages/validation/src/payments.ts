@@ -73,14 +73,29 @@ export const createRefundSchema = z.object({
   paymentId: uuid,
   amount: money,
   reason: z.string().trim().min(1).max(1000),
-  methodId: uuid,
+  kind: z.enum(['MANUAL', 'GATEWAY']).default('MANUAL'),
+  methodId: uuid.optional(),
   referenceNumber: optionalText(120),
   instrumentNumber: optionalText(120),
   bankName: optionalText(120),
   toCreditBalance: z.boolean().optional().default(false),
+}).superRefine((input, context) => {
+  if (input.kind === 'MANUAL' && !input.methodId) context.addIssue({ code: 'custom', path: ['methodId'], message: 'Choose a payment method for a manual refund.' });
+  if (input.kind === 'GATEWAY' && input.toCreditBalance) context.addIssue({ code: 'custom', path: ['toCreditBalance'], message: 'Gateway refunds are returned to the original payment method, not student credit.' });
+  if (input.kind === 'GATEWAY' && (input.referenceNumber || input.instrumentNumber || input.bankName)) context.addIssue({ code: 'custom', path: ['referenceNumber'], message: 'Manual refund instrument details are not used for a gateway refund.' });
 });
 
 export const refundDecisionSchema = z.object({ approved: z.boolean(), note: optionalText(1000) });
+
+export const refundReconciliationSchema = z.object({
+  outcome: z.enum(['REFUNDED', 'FAILED']),
+  providerRefundId: z.string().trim().min(1).max(160).optional(),
+  amount: money,
+  currency: z.string().trim().regex(/^[A-Za-z]{3}$/).transform((value) => value.toUpperCase()),
+  resolution: z.string().trim().min(5).max(1000),
+}).superRefine((input, context) => {
+  if (input.outcome === 'REFUNDED' && !input.providerRefundId) context.addIssue({ code: 'custom', path: ['providerRefundId'], message: 'Enter the provider refund ID confirmed in the provider dashboard.' });
+});
 
 export const applyCreditSchema = z.object({
   idempotencyKey: uuid,
@@ -97,4 +112,5 @@ export type CreatePaymentMethodInput = z.infer<typeof createPaymentMethodSchema>
 export type UpdatePaymentMethodInput = z.infer<typeof updatePaymentMethodSchema>;
 export type ManualPaymentInput = z.infer<typeof manualPaymentSchema>;
 export type CreateRefundInput = z.infer<typeof createRefundSchema>;
+export type RefundReconciliationInput = z.infer<typeof refundReconciliationSchema>;
 export type ApplyCreditInput = z.infer<typeof applyCreditSchema>;

@@ -33,6 +33,7 @@ import { SponsorsModule } from './modules/sponsors';
 import { PortalModule } from './modules/portal';
 import { AdjustmentsModule } from './modules/adjustments';
 import { BenefitsModule } from './modules/benefits';
+import { AttendanceModule } from './modules/attendance';
 import { PayerResponsibilitiesModule } from './modules/payer-responsibilities';
 import { TenantContextPublicModule } from './modules/tenant-context';
 import { TenantHostResolutionMiddleware } from './common/tenant-host';
@@ -90,6 +91,7 @@ import { OrganizationModule } from './modules/organization';
     PortalModule,
     AdjustmentsModule,
     BenefitsModule,
+    AttendanceModule,
     PayerResponsibilitiesModule,
     TenantContextPublicModule,
     OrganizationModule,

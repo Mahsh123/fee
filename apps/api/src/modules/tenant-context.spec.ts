@@ -27,7 +27,7 @@ describe('public tenant context projection', () => {
         return Promise.resolve(branding).then(resolve);
       },
     }) as unknown as Promise<typeof branding>);
-    const settingsFindUnique = vi.fn(async () => ({ allowPublicRegistration: true }));
+    const settingsFindUnique = vi.fn(async () => ({ allowPublicRegistration: true, timezone: 'Asia/Kolkata' }));
     const tenantFindFirst = vi.fn(() => ({
       then: (resolve: (value: { enabledModules: string[] }) => unknown) => {
         expect(context.peek()?.tenantId).toBe('tenant-a');
@@ -40,7 +40,7 @@ describe('public tenant context projection', () => {
     });
     const findOverrides = vi.fn(async () => [{ moduleKey: 'FEES', enabled: false }]);
     const service = new PublicTenantContextService({ db: {
-      tenantBranding: { findUnique }, tenantSettings: { findUnique: settingsFindUnique }, tenant: { findFirst: tenantFindFirst },
+      tenantBranding: { findUnique }, tenantSettings: { findUnique: settingsFindUnique }, tenant: { findFirst: tenantFindFirst, findUnique: vi.fn(async () => ({ organizationType: 'school' })) },
       tenantSubscription: { findFirst: findSubscription }, tenantModuleOverride: { findMany: findOverrides },
     } } as never, context);
     const host = { kind: 'tenant' as const, hostname: 'north.localhost', baseDomain: 'localhost', tenantId: 'tenant-a', slug: 'north', name: 'North School', status: 'ACTIVE' as const };
@@ -62,9 +62,9 @@ describe('public tenant context projection', () => {
         landingActionLabel: true,
       },
     });
-    expect(settingsFindUnique).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a' }, select: { allowPublicRegistration: true } });
+    expect(settingsFindUnique).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a' }, select: { allowPublicRegistration: true, timezone: true } });
     expect(tenantIdAtQueryExecution).toBe('tenant-a');
-    expect(result).toEqual({ kind: 'tenant', slug: 'north', name: 'North School', enabledModules: [...CORE_TENANT_MODULES, 'PAYMENTS'].sort(), allowPublicRegistration: true, branding: {
+    expect(result).toEqual({ kind: 'tenant', slug: 'north', name: 'North School', organizationCategory: 'school', organizationTypeLabel: 'School', timezone: 'Asia/Kolkata', enabledModules: [...CORE_TENANT_MODULES, 'PAYMENTS'].sort(), allowPublicRegistration: true, branding: {
       organizationName: 'North School', email: 'office@north.example.test', logoUrl: '/tenant-brands/school.svg', primaryColor: '#123456', accentColor: '#654321',
       landingTitle: 'Welcome', landingDescription: 'A public description', landingActionLabel: 'Sign in',
     } });
@@ -73,7 +73,7 @@ describe('public tenant context projection', () => {
   it('returns platform and missing-host states without reading branding', async () => {
     const findUnique = vi.fn(async () => null);
     const service = new PublicTenantContextService({ db: {
-      tenantBranding: { findUnique }, tenantSettings: { findUnique: vi.fn(async () => null) }, tenant: { findFirst: vi.fn(async () => ({ enabledModules: [] })) },
+      tenantBranding: { findUnique }, tenantSettings: { findUnique: vi.fn(async () => null) }, tenant: { findFirst: vi.fn(async () => ({ enabledModules: [] })), findUnique: vi.fn(async () => null) },
       tenantSubscription: { findFirst: vi.fn(async () => null) }, tenantModuleOverride: { findMany: vi.fn(async () => []) },
     } } as never, new TenantContextService());
 
@@ -86,7 +86,7 @@ describe('public tenant context projection', () => {
   it('handles missing branding defaults and returns explicit inactive/unknown states', async () => {
     const findUnique = vi.fn(async () => null);
     const db = {
-      tenantBranding: { findUnique }, tenantSettings: { findUnique: vi.fn(async () => null) }, tenant: { findFirst: vi.fn(async () => ({ enabledModules: [] })) },
+      tenantBranding: { findUnique }, tenantSettings: { findUnique: vi.fn(async () => null) }, tenant: { findFirst: vi.fn(async () => ({ enabledModules: [] })), findUnique: vi.fn(async () => ({ organizationType: 'Community Support Group' })) },
       tenantSubscription: { findFirst: vi.fn(async () => null) }, tenantModuleOverride: { findMany: vi.fn(async () => []) },
     };
     const service = new PublicTenantContextService({ db } as never, new TenantContextService());
@@ -97,6 +97,9 @@ describe('public tenant context projection', () => {
       kind: 'tenant',
       name: 'Demo Academy',
       slug: 'demo',
+      organizationCategory: 'other_organisation',
+      organizationTypeLabel: 'Community Support Group',
+      timezone: 'Asia/Kolkata',
       enabledModules: [...CORE_TENANT_MODULES].sort(),
       allowPublicRegistration: false,
       branding: {

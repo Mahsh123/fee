@@ -63,8 +63,10 @@ describe('tenant user invitations', () => {
     const tx = {
       user: { create: userCreate },
       userRole: { createMany: vi.fn(async () => ({ count: 1 })) },
-      branch: { findFirst: vi.fn(async () => ({ id: 'branch-main' })) },
-      userBranchMembership: { create: vi.fn(async () => ({})) },
+      branch: { findFirst: vi.fn(async () => ({ id: 'branch-main' })), findMany: vi.fn(async () => [{ id: 'branch-main' }]) },
+      organizationUnit: { findMany: vi.fn(async () => []) },
+      userBranchMembership: { createMany: vi.fn(async () => ({ count: 1 })) },
+      userOrganizationMembership: { createMany: vi.fn(async () => ({ count: 1 })) },
       outboxEvent: { create: outboxCreate },
     };
     const prisma = { transactionWithRetry: vi.fn(async (work: (transaction: typeof tx) => Promise<unknown>) => work(tx)) };
@@ -93,9 +95,25 @@ describe('tenant user invitations', () => {
 
     expect(result).toMatchObject({ email: 'person@example.test', status: 'INVITED' });
     expect(userCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ tenantId: 'tenant-a', status: 'INVITED', invitationTokenHash: 'invitation-hash', mustChangePassword: true }) }));
+    expect(tx.userBranchMembership.createMany).toHaveBeenCalledWith({ data: [{ tenantId: 'tenant-a', userId: result.id, branchId: 'branch-main', isPrimary: true, grantedBy: 'admin-a' }] });
     expect(outboxCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
       eventType: 'USER_INVITATION', tenantId: 'tenant-a', aggregateId: result.id,
       payload: expect.objectContaining({ email: 'person@example.test', acceptUrl: 'http://north.localhost:3000/accept-invitation#single-use-invitation-token', tokenHash: 'invitation-hash' }),
     }) }));
+  });
+
+  it('bulk invitation rejects duplicate addresses before opening a write transaction', async () => {
+    const context = new TenantContextService();
+    const transactionWithRetry = vi.fn();
+    const service = new AccessService({ transactionWithRetry } as never, {} as never, {} as never, context);
+    const host = { kind: 'tenant' as const, hostname: 'north.localhost', baseDomain: 'localhost', tenantId: 'tenant-a', slug: 'north', name: 'North Workspace', status: 'ACTIVE' as const };
+
+    await expect(context.run({ tenantId: 'tenant-a', userId: 'admin-a', requestId: 'user-bulk-duplicates', tenantHost: host }, () => service.inviteUsersBulk('tenant-a', {
+      users: [
+        { firstName: 'Asha', email: 'person@example.test', roleIds: ['role-a'], branchIds: ['00000000-0000-4000-8000-000000000001'] },
+        { firstName: 'Asha', email: 'PERSON@example.test', roleIds: ['role-a'], branchIds: ['00000000-0000-4000-8000-000000000001'] },
+      ],
+    }))).rejects.toMatchObject({ status: 422 });
+    expect(transactionWithRetry).not.toHaveBeenCalled();
   });
 });

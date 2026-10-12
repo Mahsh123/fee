@@ -6,7 +6,7 @@ export const TENANT_MODEL_NAMES = Object.freeze([
   'TenantSubscription', 'TenantModuleOverride', 'TenantEntitlementOverride', 'PlatformInvoice', 'PlatformPayment', 'PlatformRefund',
   'TenantPaymentGateway', 'TenantNotificationSetting', 'User', 'Role', 'UserRole',
   'RolePermission', 'RefreshToken', 'AcademicYear', 'AcademicUnit', 'Student',
-  'StudentUnitMembership', 'Guardian', 'StudentGuardian', 'StudentGroup',
+  'StudentUnitMembership', 'Guardian', 'StudentGuardian', 'AttendanceSession', 'AttendanceRecord', 'StudentGroup',
   'StudentGroupMember', 'StudentCustomAttribute', 'AdmissionApplication', 'Admission',
   'Sponsor', 'FeeCategory', 'FeeType', 'FeeTypeVersion', 'FeeStructure',
   'FeeStructureVersion', 'FeeStructureItem', 'InstallmentRuleItem', 'FeePolicy',

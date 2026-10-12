@@ -424,7 +424,9 @@ export class Money {
     const negative = this.units < 0n;
     const rounded = unitsToDecimalString(this.units < 0n ? -this.units : this.units, MONEY_SCALE, minorUnits);
     const [whole = '0', fraction] = rounded.split('.');
-    const withSeparators = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const withSeparators = this.currency.code === 'INR'
+      ? groupIndianNumber(whole)
+      : whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     const body = fraction ? `${withSeparators}.${fraction}` : withSeparators;
     const symbol = options.showSymbol === false ? '' : this.currency.symbol;
     return `${negative ? '-' : ''}${symbol}${body}`;
@@ -444,6 +446,13 @@ export class Money {
     const difference = this.subtract(paid);
     return difference.isNegative ? Money.zero(this.currency) : difference;
   }
+}
+
+function groupIndianNumber(value: string): string {
+  if (value.length <= 3) return value;
+  const lastThree = value.slice(-3);
+  const leading = value.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',');
+  return `${leading},${lastThree}`;
 }
 
 export type MoneyValue = Money | bigint | number | string | { toString(): string };

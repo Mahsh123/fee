@@ -35,6 +35,7 @@ export const createOrganizationUnitSchema = z.object({
 export const updateOrganizationUnitSchema = createOrganizationUnitSchema.partial().extend({ active: z.boolean().optional() })
   .refine((value) => Object.keys(value).length > 0, 'Change at least one organization unit field.');
 export const replaceOrganizationMembersSchema = z.object({ userIds: z.array(uuid).max(2000).refine((ids) => new Set(ids).size === ids.length, 'A user can belong to a unit only once.') });
+export const replaceUserOrganizationUnitsSchema = z.object({ unitIds: z.array(uuid).max(500).refine((ids) => new Set(ids).size === ids.length, 'A user can belong to a group only once.') });
 
 export const createUserAssignmentSchema = z.object({
   userId: uuid,
@@ -60,5 +61,6 @@ export type ReplaceUserBranchesInput = z.infer<typeof replaceUserBranchesSchema>
 export type CreateOrganizationUnitInput = z.infer<typeof createOrganizationUnitSchema>;
 export type UpdateOrganizationUnitInput = z.infer<typeof updateOrganizationUnitSchema>;
 export type ReplaceOrganizationMembersInput = z.infer<typeof replaceOrganizationMembersSchema>;
+export type ReplaceUserOrganizationUnitsInput = z.infer<typeof replaceUserOrganizationUnitsSchema>;
 export type CreateUserAssignmentInput = z.infer<typeof createUserAssignmentSchema>;
 export type UpdateUserAssignmentInput = z.infer<typeof updateUserAssignmentSchema>;

@@ -3,7 +3,7 @@ import type { TenantProvisionPayload } from './provision-tenant-wizard';
 import { buildProvisionTenantRequest, createProvisioningIdempotencyKeyManager } from './provisioning-idempotency';
 
 const payload: TenantProvisionPayload = {
-  name: 'Cedar Club', organizationType: 'Club', contactEmail: null, contactPhone: null, countryCode: 'IN',
+  name: 'Cedar Club', slug: 'cedar-club', organizationType: 'club_association', contactEmail: null, contactPhone: null, countryCode: 'IN',
   enabledModules: ['USERS', 'BRANCHES', 'ORGANIZATION', 'ASSIGNMENTS', 'REPORTS', 'NOTIFICATIONS'],
   currency: 'INR', currencySymbol: '₹', currencyMinorUnits: 2, timezone: 'Asia/Kolkata', locale: 'en-IN',
   tenantAdminEmail: 'admin@cedar.test', tenantAdminFirstName: 'Asha', tenantAdminLastName: null,

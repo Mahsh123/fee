@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { changePasswordSchema, createPaymentOrderSchema, loginSchema, manualPaymentSchema, refreshSchema, updateOwnProfileSchema } from './index';
 import { tenantBrandingUpdateSchema } from './tenant-operations';
-import { createPlanSchema, provisionTenantSchema, updatePlanSchema } from './platform';
+import { createPlanSchema, provisionTenantSchema, tenantSlugAvailabilitySchema, updatePlanSchema, updateTenantProfileSchema } from './platform';
 
 describe('shared validation contracts', () => {
   it('resolves login scope from the hostname and strips client tenant identity', () => {
@@ -65,5 +65,17 @@ describe('shared validation contracts', () => {
       name: 'Example Org', enabledModules: [...core, 'PORTAL'], currency: 'INR', currencySymbol: '₹', currencyMinorUnits: 2,
       timezone: 'Asia/Kolkata', locale: 'en-IN', tenantAdminEmail: 'owner@example.test', tenantAdminFirstName: 'Owner',
     }).success).toBe(false);
+  });
+
+  it('accepts stable organisation category IDs and validates workspace slugs', () => {
+    const core = ['USERS', 'BRANCHES', 'ORGANIZATION', 'ASSIGNMENTS', 'REPORTS', 'NOTIFICATIONS'];
+    const common = { name: 'Example Organisation', currency: 'INR', currencySymbol: '₹', currencyMinorUnits: 2, timezone: 'Asia/Kolkata', locale: 'en-IN', tenantAdminEmail: 'admin@example.test', tenantAdminFirstName: 'Asha', enabledModules: core };
+    expect(provisionTenantSchema.safeParse({ ...common, organizationType: 'school', slug: 'example-school' }).success).toBe(true);
+    expect(provisionTenantSchema.safeParse({ ...common, organizationType: 'Community Centre' }).success).toBe(true);
+    expect(provisionTenantSchema.safeParse({ ...common, organizationType: 'S' }).success).toBe(false);
+    expect(tenantSlugAvailabilitySchema.safeParse({ slug: 'tenant-1' }).success).toBe(true);
+    expect(tenantSlugAvailabilitySchema.safeParse({ slug: 'platform' }).success).toBe(true);
+    expect(updateTenantProfileSchema.safeParse({ organizationType: 'club_association' }).success).toBe(true);
+    expect(updateTenantProfileSchema.safeParse({ organizationType: 'Community Centre' }).success).toBe(true);
   });
 });

@@ -10,13 +10,13 @@
 #   * Every service has a resource limit, so one runaway report cannot starve the
 #     payment path.
 #   * TLS is terminated at the proxy with certificates mounted read-only.
-#   * The API and worker run as separate replicas of the same image.
-#   * Backups run as a scheduled sidecar, because a financial system without tested
-#     restores is one incident away from being unable to explain itself.
+#   * API, web, and worker default to one process each on a single host.
+#   * Backups run as a scheduled sidecar and can upload age-encrypted artifacts
+#     off-host; a restore drill is still an operator requirement.
 #
 # Secrets come from the environment file and are never baked into an image.
 # Neon roles and grants are provisioned and verified before deployment. The
-# migration job uses a direct endpoint; API replicas use only the pooled runtime URL.
+# migration job uses a direct endpoint; the API uses only the pooled runtime URL.
 # =====================================================================================
 
 name: fee-platform-prod
@@ -59,12 +59,6 @@ x-api-environment: &api-environment
   CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS must be provided}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_PRETTY: 'false'
-  SENTRY_DSN: ${SENTRY_DSN:-}
-  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-  S3_ENDPOINT: ${S3_ENDPOINT:-}
-  S3_BUCKET: ${S3_BUCKET:-fee-platform-documents}
-  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
-  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
   SMTP_HOST: ${SMTP_HOST:-}
   SMTP_USER: ${SMTP_USER:-}
   SMTP_PASSWORD: ${SMTP_PASSWORD:-}
@@ -79,7 +73,7 @@ services:
       - --appendonly
       - 'yes'
       - --maxmemory
-      - ${REDIS_MAXMEMORY:-512mb}
+      - ${REDIS_MAXMEMORY:-128mb}
       - --maxmemory-policy
       - noeviction
       - --requirepass
@@ -94,11 +88,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: 768M
+          cpus: '0.25'
+          memory: 256M
 
   migration:
-    image: ${MIGRATION_IMAGE:?MIGRATION_IMAGE must be the full-tooling one-shot operations image}
+    image: ghcr.io/mahsh123/fee-operations:${IMAGE_TAG:?IMAGE_TAG must be an immutable sha-* image tag}
     restart: 'no'
     logging: *default-logging
     environment:
@@ -117,11 +111,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
+          cpus: '0.75'
           memory: 1G
 
   platform-bootstrap:
-    image: ${MIGRATION_IMAGE:?MIGRATION_IMAGE must be the full-tooling one-shot operations image}
+    image: ghcr.io/mahsh123/fee-operations:${IMAGE_TAG:?IMAGE_TAG must be an immutable sha-* image tag}
     restart: 'no'
     logging: *default-logging
     depends_on:
@@ -136,11 +130,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: 512M
+          cpus: '0.25'
+          memory: 384M
 
   api:
-    image: ${API_IMAGE:-fee-platform/api:latest}
+    image: ghcr.io/mahsh123/fee-api:${IMAGE_TAG:?IMAGE_TAG must be an immutable sha-* image tag}
     restart: always
     logging: *default-logging
     depends_on:
@@ -165,24 +159,18 @@ services:
       retries: 3
       start_period: 40s
     deploy:
-      replicas: ${API_REPLICAS:-2}
+      replicas: ${API_REPLICAS:-1}
       resources:
         limits:
-          cpus: '1.5'
-          memory: 1G
-      update_config:
-        # One at a time: a rolling restart of every instance would leave no process
-        # available to receive webhooks, and providers do not retry forever.
-        order: start-first
-        parallelism: 1
-        delay: 15s
+          cpus: '0.75'
+          memory: 768M
       restart_policy:
         condition: on-failure
         delay: 5s
         max_attempts: 5
 
   worker:
-    image: ${WORKER_IMAGE:-fee-platform/worker:latest}
+    image: ghcr.io/mahsh123/fee-worker:${IMAGE_TAG:?IMAGE_TAG must be an immutable sha-* image tag}
     restart: always
     logging: *default-logging
     depends_on:
@@ -208,14 +196,14 @@ services:
       replicas: ${WORKER_REPLICAS:-1}
       resources:
         limits:
-          cpus: '1.0'
-          memory: 1G
+          cpus: '0.5'
+          memory: 384M
       restart_policy:
         condition: on-failure
         delay: 10s
 
   web:
-    image: ${WEB_IMAGE:-fee-platform/web:latest}
+    image: ghcr.io/mahsh123/fee-web:${IMAGE_TAG:?IMAGE_TAG must be an immutable sha-* image tag}
     restart: always
     logging: *default-logging
     depends_on:
@@ -227,11 +215,11 @@ services:
     expose:
       - '3000'
     deploy:
-      replicas: ${WEB_REPLICAS:-2}
+      replicas: ${WEB_REPLICAS:-1}
       resources:
         limits:
-          cpus: '1.0'
-          memory: 768M
+          cpus: '0.5'
+          memory: 512M
 
   nginx:
     image: nginx:1.27-alpine
@@ -254,17 +242,14 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: 256M
+          cpus: '0.25'
+          memory: 128M
 
   # Additional encrypted logical backup. Neon PITR remains the provider recovery
   # layer; this sidecar uses the separate read-only fee_backup login.
   backup:
-    image: ${BACKUP_IMAGE:-fee-platform/backup:latest}
+    image: ghcr.io/mahsh123/fee-backup:${IMAGE_TAG:?IMAGE_TAG must be an immutable sha-* image tag}
     user: postgres
-    build:
-      context: .
-      dockerfile: infrastructure/docker/backup.Dockerfile
     restart: unless-stopped
     logging: *default-logging
     depends_on:
@@ -280,14 +265,20 @@ services:
       PGCHANNELBINDING: require
       BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?BACKUP_AGE_RECIPIENT must be provided}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-fee-platform}
+      AWS_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${BACKUP_S3_REGION:-us-east-1}
     volumes:
       - backups:/backups
     entrypoint: ['/usr/local/bin/backup-encrypted.sh']
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: 512M
+          cpus: '0.25'
+          memory: 256M
 
 volumes:
   redis-data:

@@ -13,6 +13,7 @@ import {
   createTenantUserSchema,
   provisionTenantSchema,
   provisionTenantIdempotencyKeySchema,
+  tenantSlugAvailabilitySchema,
   resetTenantUserPasswordSchema,
   updatePlatformAdminProfileSchema,
   updateTenantProfileSchema,
@@ -532,6 +533,16 @@ export class PlatformService {
     return paginate(enriched, total, query);
   }
 
+  async checkTenantSlugAvailability(rawSlug: string) {
+    this.requirePlatformAdmin();
+    const { slug } = tenantSlugAvailabilitySchema.parse({ slug: rawSlug });
+    if (slug === PLATFORM_SYSTEM_TENANT_SLUG || slug === this.config.platformSubdomain.toLowerCase()) {
+      return { slug, available: false, reason: 'reserved' as const };
+    }
+    const tenant = await this.prisma.db.tenant.findUnique({ where: { slug }, select: { id: true } });
+    return { slug, available: !tenant, reason: tenant ? 'in_use' as const : null };
+  }
+
   async overview() {
     const actor = this.requirePlatformAdmin();
     const tenantWhere = { slug: { not: PLATFORM_SYSTEM_TENANT_SLUG } };
@@ -683,7 +694,11 @@ export class PlatformService {
     const priorOperation = await this.prisma.db.tenantProvisioningOperation.findUnique({ where: operationWhere });
     if (priorOperation) return replayProvisioningOperation(priorOperation, requestFingerprint);
 
-    const slugBase = tenantSlugBase(input.name);
+    if (input.slug) {
+      const availability = await this.checkTenantSlugAvailability(input.slug);
+      if (!availability.available) throw AppError.conflict('TENANT_SLUG_UNAVAILABLE', 'That workspace address is already in use or reserved. Choose another address.');
+    }
+    const slugBase = input.slug ?? tenantSlugBase(input.name);
     const invitationToken = this.passwords.generateToken();
     const invitationTokenHash = this.passwords.hashToken(invitationToken);
     const invitationExpiresAt = new Date(Date.now() + 48 * 60 * 60 * 1_000);
@@ -691,7 +706,7 @@ export class PlatformService {
 
     let suffix = 1;
     for (let attempt = 0; attempt < 12; attempt += 1) {
-      const slug = await this.availableSlug(slugBase, suffix);
+      const slug = input.slug ?? await this.availableSlug(slugBase, suffix);
       try {
         const created = await this.prisma.transactionWithRetry(async (tx) => {
         const availablePermissionKeys = new Set((await tx.permission.findMany({ select: { key: true } })).map((permission) => permission.key));
@@ -761,6 +776,7 @@ export class PlatformService {
           if (concurrentOperation) return replayProvisioningOperation(concurrentOperation, requestFingerprint);
         }
         if (isUniqueViolation(error) && uniqueViolationTargets(error, 'slug')) {
+          if (input.slug) throw AppError.conflict('TENANT_SLUG_UNAVAILABLE', 'That workspace address was just claimed. Choose another address and retry.');
           suffix += 1;
           continue;
         }
@@ -801,8 +817,8 @@ export class PlatformService {
         if (!updated) throw AppError.notFound('Tenant');
         await this.audit.record(tx, {
           tenantId: actor.tenantId, actorId: actor.userId, action: 'platform.tenant.updated', entityType: 'Tenant', entityId: id,
-          before: { slug: current.slug, name: current.name, contactEmail: current.contactEmail, contactPhone: current.contactPhone, countryCode: current.countryCode, trialEndsAt: current.trialEndsAt, subscriptionPlan: current.subscriptionPlan, subscriptionStatus: current.subscriptionStatus, subscriptionRenewalAt: current.subscriptionRenewalAt },
-          after: { slug: updated.slug, name: updated.name, contactEmail: updated.contactEmail, contactPhone: updated.contactPhone, countryCode: updated.countryCode, trialEndsAt: updated.trialEndsAt, subscriptionPlan: updated.subscriptionPlan, subscriptionStatus: updated.subscriptionStatus, subscriptionRenewalAt: updated.subscriptionRenewalAt },
+          before: { slug: current.slug, name: current.name, organizationType: current.organizationType, contactEmail: current.contactEmail, contactPhone: current.contactPhone, countryCode: current.countryCode, trialEndsAt: current.trialEndsAt, subscriptionPlan: current.subscriptionPlan, subscriptionStatus: current.subscriptionStatus, subscriptionRenewalAt: current.subscriptionRenewalAt },
+          after: { slug: updated.slug, name: updated.name, organizationType: updated.organizationType, contactEmail: updated.contactEmail, contactPhone: updated.contactPhone, countryCode: updated.countryCode, trialEndsAt: updated.trialEndsAt, subscriptionPlan: updated.subscriptionPlan, subscriptionStatus: updated.subscriptionStatus, subscriptionRenewalAt: updated.subscriptionRenewalAt },
         });
         return { ...updated, tenantHost: updated.slug + '.' + this.config.tenantBaseDomain };
       });
@@ -1363,6 +1379,11 @@ export class PlatformController {
   @Get()
   @ApiOperation({ summary: 'List tenant workspaces on the platform' })
   list(@Query() query: Record<string, unknown>) { return this.platform.listTenants(query); }
+
+  @Get('slug-availability')
+  @UsePipes(new ZodValidationPipe(tenantSlugAvailabilitySchema))
+  @ApiOperation({ summary: 'Check whether a workspace slug is valid and available' })
+  checkSlug(@Query() query: { slug: string }) { return this.platform.checkTenantSlugAvailability(query.slug); }
 
   @Get(':id')
   @ApiOperation({ summary: 'Read an organization profile, subscription and usage summary' })

@@ -5,8 +5,8 @@ import { accessTierForRoles, DEFAULT_ROLE_PERMISSIONS, PERMISSION_GROUPS, PERMIS
 import { isUniqueViolation, type TransactionClient } from '@fee/database';
 import {
   assignUserRolesSchema,
+  bulkInviteTenantUsersSchema,
   inviteTenantUserSchema,
-  createTenantUserSchema,
   updateRolePermissionsSchema,
   createTenantRoleSchema,
   updateTenantRoleSchema,
@@ -14,6 +14,7 @@ import {
   updateTenantUserProfileSchema,
   resetTenantUserPasswordSchema,
   type AssignUserRolesInput,
+  type BulkInviteTenantUsersInput,
   type CreateTenantUserInput,
   type InviteTenantUserInput,
   type UpdateTenantUserProfileInput,
@@ -30,7 +31,7 @@ import { CurrentTenant, RequireModules, RequirePermissions, TenantContextModule,
 import { AuthModule } from './auth';
 import { PasswordService } from '../common/security';
 import { AppConfigService } from '../config/env';
-import { buildUserInvitationUrl, enqueueUserInvitation } from '../common/invitations';
+import { buildPasswordResetUrl, buildUserInvitationUrl, enqueuePasswordReset, enqueueUserInvitation } from '../common/invitations';
 import { assertTenantUserSeatAvailable } from '../common/user-limits';
 
 export type AccessMutationAudit = (tx: TransactionClient) => Promise<void>;
@@ -68,18 +69,38 @@ export class AccessService {
       this.prisma.db.user.count({ where }),
     ]);
     const userIds = users.map(({ id }) => id);
-    const roleLinks = userIds.length ? await this.prisma.db.userRole.findMany({ where: { tenantId, userId: { in: userIds } } }) : [];
+    const [roleLinks, branchLinks, unitLinks] = userIds.length ? await Promise.all([
+      this.prisma.db.userRole.findMany({ where: { tenantId, userId: { in: userIds } } }),
+      this.prisma.db.userBranchMembership.findMany({ where: { tenantId, userId: { in: userIds } }, select: { userId: true, branchId: true, isPrimary: true } }),
+      this.prisma.db.userOrganizationMembership.findMany({ where: { tenantId, userId: { in: userIds } }, select: { userId: true, unitId: true } }),
+    ]) : [[], [], []] as const;
     const roleIds = [...new Set(roleLinks.map(({ roleId }) => roleId))];
     const roles = roleIds.length ? await this.prisma.db.role.findMany({ where: { tenantId, id: { in: roleIds } }, select: { id: true, key: true, name: true } }) : [];
+    const branchIds = [...new Set(branchLinks.map(({ branchId }) => branchId))];
+    const branches = branchIds.length ? await this.prisma.db.branch.findMany({ where: { tenantId, id: { in: branchIds } }, select: { id: true, code: true, name: true } }) : [];
+    const unitIds = [...new Set(unitLinks.map(({ unitId }) => unitId))];
+    const units = unitIds.length ? await this.prisma.db.organizationUnit.findMany({ where: { tenantId, id: { in: unitIds } }, select: { id: true, code: true, name: true, unitType: true } }) : [];
     const roleById = new Map(roles.map((role) => [role.id, role]));
+    const branchById = new Map(branches.map((branch) => [branch.id, branch]));
+    const unitById = new Map(units.map((unit) => [unit.id, unit]));
     const rolesByUser = new Map<string, Array<{ role: { id: string; key: string; name: string } }>>();
+    const branchesByUser = new Map<string, Array<{ id: string; code: string; name: string; isPrimary: boolean }>>();
+    const unitsByUser = new Map<string, Array<{ id: string; code: string; name: string; unitType: string }>>();
     for (const link of roleLinks) {
       const role = roleById.get(link.roleId);
       if (role) rolesByUser.set(link.userId, [...(rolesByUser.get(link.userId) ?? []), { role }]);
     }
+    for (const link of branchLinks) {
+      const branch = branchById.get(link.branchId);
+      if (branch) branchesByUser.set(link.userId, [...(branchesByUser.get(link.userId) ?? []), { ...branch, isPrimary: link.isPrimary }]);
+    }
+    for (const link of unitLinks) {
+      const unit = unitById.get(link.unitId);
+      if (unit) unitsByUser.set(link.userId, [...(unitsByUser.get(link.userId) ?? []), unit]);
+    }
     const items = users.map((user) => {
       const userRoles = rolesByUser.get(user.id) ?? [];
-      return { ...user, userRoles, accessTier: accessTierForRoles(userRoles.map(({ role }) => role.key)) };
+      return { ...user, userRoles, branches: branchesByUser.get(user.id) ?? [], organizationUnits: unitsByUser.get(user.id) ?? [], accessTier: accessTierForRoles(userRoles.map(({ role }) => role.key)) };
     });
     return paginate(items, total, query);
   }
@@ -131,7 +152,7 @@ export class AccessService {
         return { ...user, roles: roles.map(({ id: roleId, key, name }) => ({ id: roleId, key, name })) };
       });
     } catch (error) {
-      if (isUniqueViolation(error)) throw AppError.conflict('USER_EMAIL_EXISTS', 'A user with this email address already exists in this institution.');
+      if (isUniqueViolation(error)) throw AppError.conflict('USER_EMAIL_EXISTS', 'A user with this email address already exists in this organization.');
       throw error;
     }
   }
@@ -141,44 +162,88 @@ export class AccessService {
     const actorId = this.tenantContext.require().userId;
     const host = this.tenantContext.requireTenantHost();
     if (host.kind !== 'tenant' || host.tenantId !== tenantId) throw AppError.forbidden('Invitations can only be sent from this tenant workspace.');
+    try {
+      return await this.prisma.transactionWithRetry(async (tx) => this.createInvitation(tx, tenantId, input, actorId, host.hostname));
+    } catch (error) {
+      if (isUniqueViolation(error)) throw AppError.conflict('USER_EMAIL_EXISTS', 'A user with this email address already exists in this organization.');
+      throw error;
+    }
+  }
+
+  async inviteUsersBulk(tenantId: string, input: BulkInviteTenantUsersInput) {
+    this.assertTenant(tenantId);
+    const actorId = this.tenantContext.require().userId;
+    const host = this.tenantContext.requireTenantHost();
+    if (host.kind !== 'tenant' || host.tenantId !== tenantId) throw AppError.forbidden('Invitations can only be sent from this tenant workspace.');
+    const emails = input.users.map((user) => user.email.toLowerCase());
+    if (new Set(emails).size !== emails.length) throw AppError.validation('Remove duplicate email addresses from the import before continuing.');
+    try {
+      return await this.prisma.transactionWithRetry(async (tx) => {
+        const existing = await tx.user.findMany({ where: { tenantId, email: { in: emails }, deletedAt: null }, select: { email: true } });
+        if (existing.length) throw AppError.conflict('USER_EMAIL_EXISTS', `These email addresses already have accounts in this organization: ${existing.map(({ email }) => email).join(', ')}.`);
+        const items = [];
+        for (const user of input.users) items.push(await this.createInvitation(tx, tenantId, user, actorId, host.hostname));
+        return { items, count: items.length };
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) throw AppError.conflict('USER_EMAIL_EXISTS', 'At least one email address already has an account in this organization. Nothing was imported; review the file and try again.');
+      throw error;
+    }
+  }
+
+  private async createInvitation(tx: TransactionClient, tenantId: string, input: InviteTenantUserInput, actorId: string | undefined, hostname: string) {
+    await this.assertSeatAvailable(tx, tenantId);
     const roleIds = [...new Set(input.roleIds)];
+    const roles = await this.assertRoleIds(tx, tenantId, roleIds);
+    this.assertMayAssignTenantAdministratorRole(roles.map((role) => role.key));
+    await this.assertPortalIdentity(tx, tenantId, roles.map((role) => role.key), input.studentId ?? null, input.guardianId ?? null);
+
+    const actor = this.tenantContext.require();
+    let requestedBranchIds = input.branchIds ? [...input.branchIds] : [];
+    if (!requestedBranchIds.length && actor.branchScopeEnabled) requestedBranchIds = [...new Set(actor.branchIds ?? [])].slice(0, 1);
+    if (!requestedBranchIds.length) {
+      const primary = await tx.branch.findFirst({ where: { tenantId, status: 'ACTIVE' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+      if (primary) requestedBranchIds = [primary.id];
+    }
+    if (!requestedBranchIds.length) throw AppError.conflict('NO_ACTIVE_BRANCH', 'Create or activate a branch before adding organization users.');
+    if (actor.branchScopeEnabled && requestedBranchIds.some((branchId) => !(actor.branchIds ?? []).includes(branchId))) {
+      throw AppError.forbidden('You can only assign users to branches where you have access.');
+    }
+    const branches = await tx.branch.findMany({ where: { tenantId, id: { in: requestedBranchIds }, status: 'ACTIVE' }, select: { id: true } });
+    if (branches.length !== requestedBranchIds.length) throw AppError.validation('Choose active branches from this organization.');
+    const primaryBranchId = input.primaryBranchId ?? requestedBranchIds[0]!;
+    if (!requestedBranchIds.includes(primaryBranchId)) throw AppError.validation('The primary branch must be included in the assigned branches.');
+    const organizationUnitIds = [...new Set(input.organizationUnitIds ?? [])];
+    if (organizationUnitIds.length) {
+      const units = await tx.organizationUnit.findMany({ where: { tenantId, id: { in: organizationUnitIds }, active: true }, select: { id: true } });
+      if (units.length !== organizationUnitIds.length) throw AppError.validation('Choose active groups from this organization.');
+    }
+
     const passwordHash = await this.passwords.hash(this.passwords.generateToken());
     const token = this.passwords.generateToken();
     const tokenHash = this.passwords.hashToken(token);
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1_000);
-    const acceptUrl = buildUserInvitationUrl(this.config?.webAppUrl ?? 'http://platform.localhost:3000', host.hostname, token, this.config?.isProduction ?? false);
-    try {
-      return await this.prisma.transactionWithRetry(async (tx) => {
-        await this.assertSeatAvailable(tx, tenantId);
-        const roles = await this.assertRoleIds(tx, tenantId, roleIds);
-        this.assertMayAssignTenantAdministratorRole(roles.map((role) => role.key));
-        await this.assertPortalIdentity(tx, tenantId, roles.map((role) => role.key), input.studentId ?? null, input.guardianId ?? null);
-        const id = cryptoRandomId();
-        const user = await tx.user.create({
-          data: {
-            id, tenantId, email: input.email, phone: input.phone?.trim() || null,
-            firstName: input.firstName, lastName: input.lastName?.trim() || null, passwordHash,
-            status: 'INVITED', mustChangePassword: true, studentId: input.studentId ?? null,
-            guardianId: input.guardianId ?? null, createdBy: actorId ?? null,
-            invitationTokenHash: tokenHash, invitationExpiresAt: expiresAt,
-          },
-          select: { id: true, email: true, firstName: true, status: true, createdAt: true },
-        });
-        await tx.userRole.createMany({ data: roles.map((role) => ({ tenantId, userId: id, roleId: role.id, grantedBy: actorId ?? null })) });
-        const primaryBranch = await tx.branch.findFirst({ where: { tenantId, status: 'ACTIVE' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
-        if (!primaryBranch) throw AppError.conflict('NO_ACTIVE_BRANCH', 'Create or activate a branch before inviting organization users.');
-        await tx.userBranchMembership.create({ data: { tenantId, userId: id, branchId: primaryBranch.id, isPrimary: true, grantedBy: actorId ?? null } });
-        await enqueueUserInvitation(tx, { tenantId, userId: id, email: user.email, firstName: user.firstName, acceptUrl, tokenHash });
-        await this.audit.record(tx, {
-          tenantId, actorId, action: 'user.invitation.sent', entityType: 'User', entityId: id,
-          after: { email: user.email, status: user.status, expiresAt: expiresAt.toISOString(), roleIds },
-        });
-        return { id: user.id, email: user.email, firstName: user.firstName, status: user.status, invitationExpiresAt: expiresAt };
-      });
-    } catch (error) {
-      if (isUniqueViolation(error)) throw AppError.conflict('USER_EMAIL_EXISTS', 'A user with this email address already exists in this institution.');
-      throw error;
-    }
+    const acceptUrl = buildUserInvitationUrl(this.config?.webAppUrl ?? 'http://platform.localhost:3000', hostname, token, this.config?.isProduction ?? false);
+    const id = cryptoRandomId();
+    const user = await tx.user.create({
+      data: {
+        id, tenantId, email: input.email, phone: input.phone?.trim() || null,
+        firstName: input.firstName, lastName: input.lastName?.trim() || null, passwordHash,
+        status: 'INVITED', mustChangePassword: true, studentId: input.studentId ?? null,
+        guardianId: input.guardianId ?? null, createdBy: actorId ?? null,
+        invitationTokenHash: tokenHash, invitationExpiresAt: expiresAt,
+      },
+      select: { id: true, email: true, firstName: true, status: true, createdAt: true },
+    });
+    await tx.userRole.createMany({ data: roles.map((role) => ({ tenantId, userId: id, roleId: role.id, grantedBy: actorId ?? null })) });
+    await tx.userBranchMembership.createMany({ data: requestedBranchIds.map((branchId) => ({ tenantId, userId: id, branchId, isPrimary: branchId === primaryBranchId, grantedBy: actorId ?? null })) });
+    if (organizationUnitIds.length) await tx.userOrganizationMembership.createMany({ data: organizationUnitIds.map((unitId) => ({ tenantId, userId: id, unitId })) });
+    await enqueueUserInvitation(tx, { tenantId, userId: id, email: user.email, firstName: user.firstName, acceptUrl, tokenHash });
+    await this.audit.record(tx, {
+      tenantId, actorId, action: 'user.invitation.sent', entityType: 'User', entityId: id,
+      after: { email: user.email, status: user.status, expiresAt: expiresAt.toISOString(), roleIds, branchIds: requestedBranchIds, organizationUnitIds },
+    });
+    return { id: user.id, email: user.email, firstName: user.firstName, status: user.status, invitationExpiresAt: expiresAt };
   }
 
   async resendInvitation(tenantId: string, userId: string) {
@@ -207,6 +272,31 @@ export class AccessService {
         after: { invitationExpiresAt: expiresAt.toISOString() },
       });
       return { id: current.id, email: current.email, status: current.status, invitationExpiresAt: expiresAt };
+    });
+  }
+
+  async sendPasswordResetLink(tenantId: string, userId: string) {
+    this.assertTenant(tenantId);
+    const actorId = this.tenantContext.require().userId;
+    const host = this.tenantContext.requireTenantHost();
+    if (host.kind !== 'tenant' || host.tenantId !== tenantId) throw AppError.forbidden('Password reset links can only be sent from this tenant workspace.');
+    return this.prisma.transactionWithRetry(async (tx) => {
+      const current = await tx.user.findFirst({ where: { tenantId, id: userId, isPlatformAdmin: false, deletedAt: null, status: 'ACTIVE' }, select: { id: true, email: true, firstName: true, emailVerifiedAt: true } });
+      if (!current) throw AppError.notFound('Active organization user');
+      if (!current.emailVerifiedAt) throw AppError.conflict('USER_INVITATION_REQUIRED', 'This user has not activated their account yet. Resend the invitation instead.');
+      await this.assertMayManageTenantAdministrator(tx, tenantId, userId);
+      const token = this.passwords.generateToken();
+      const tokenHash = this.passwords.hashToken(token);
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1_000);
+      const resetUrl = buildPasswordResetUrl(this.config?.webAppUrl ?? 'http://platform.localhost:3000', host.hostname, token, this.config?.isProduction ?? false);
+      const changed = await tx.user.updateMany({
+        where: { tenantId, id: userId, status: 'ACTIVE', email: current.email, emailVerifiedAt: { not: null }, deletedAt: null },
+        data: { passwordResetTokenHash: tokenHash, passwordResetExpiresAt: expiresAt },
+      });
+      if (changed.count !== 1) throw AppError.conflict('PASSWORD_RESET_CHANGED', 'This account changed while the reset link was being created. Reload and retry.');
+      await enqueuePasswordReset(tx, { tenantId, userId, email: current.email, firstName: current.firstName, resetUrl, tokenHash });
+      await this.audit.record(tx, { tenantId, actorId, action: 'user.password_reset.sent', entityType: 'User', entityId: userId, after: { expiresAt: expiresAt.toISOString() } });
+      return { id: userId, email: current.email, expiresAt };
     });
   }
 
@@ -298,7 +388,7 @@ export class AccessService {
         return updated;
       });
     } catch (error) {
-      if (isUniqueViolation(error)) throw AppError.conflict('USER_EMAIL_EXISTS', 'A user with this email address already exists in this institution.');
+      if (isUniqueViolation(error)) throw AppError.conflict('USER_EMAIL_EXISTS', 'A user with this email address already exists in this organization.');
       throw error;
     }
   }
@@ -460,7 +550,7 @@ export class AccessService {
 
   private async assertRoleIds(tx: TransactionClient, tenantId: string, roleIds: string[]) {
     const roles = await tx.role.findMany({ where: { tenantId, id: { in: roleIds }, key: { not: 'PLATFORM_ADMIN' }, active: true }, select: { id: true, key: true, name: true } });
-    if (roles.length !== roleIds.length) throw AppError.validation('Choose roles that belong to this institution.');
+    if (roles.length !== roleIds.length) throw AppError.validation('Choose roles that belong to this organization.');
     return roles;
   }
 
@@ -535,9 +625,11 @@ export class AccessController {
   constructor(private readonly access: AccessService) {}
 
   @Get('users') @RequirePermissions(PERMISSIONS.USER_READ) listUsers(@CurrentTenant() tenant: string, @Query() query: Record<string, unknown>) { return this.access.listUsers(tenant, query); }
-  @Post('users') @RequirePermissions(PERMISSIONS.USER_CREATE, PERMISSIONS.ROLE_ASSIGN) @UsePipes(new ZodValidationPipe(createTenantUserSchema)) @ApiOperation({ summary: 'Create a tenant user with an initial role and forced password change' }) createUser(@CurrentTenant() tenant: string, @Body() body: CreateTenantUserInput) { return this.access.createUser(tenant, body); }
+  @Post('users') @RequirePermissions(PERMISSIONS.USER_CREATE, PERMISSIONS.ROLE_ASSIGN) @UsePipes(new ZodValidationPipe(inviteTenantUserSchema)) @ApiOperation({ summary: 'Add a tenant user and send a secure activation invitation' }) createUser(@CurrentTenant() tenant: string, @Body() body: InviteTenantUserInput) { return this.access.inviteUser(tenant, body); }
   @Post('users/invitations') @RequirePermissions(PERMISSIONS.USER_CREATE, PERMISSIONS.ROLE_ASSIGN) @UsePipes(new ZodValidationPipe(inviteTenantUserSchema)) @ApiOperation({ summary: 'Create an invited tenant user and queue an expiring acceptance email' }) inviteUser(@CurrentTenant() tenant: string, @Body() body: InviteTenantUserInput) { return this.access.inviteUser(tenant, body); }
+  @Post('users/bulk-invitations') @RequirePermissions(PERMISSIONS.USER_CREATE, PERMISSIONS.ROLE_ASSIGN) @UsePipes(new ZodValidationPipe(bulkInviteTenantUsersSchema)) @ApiOperation({ summary: 'Validate and atomically invite up to 100 tenant users from a reviewed import' }) bulkInviteUsers(@CurrentTenant() tenant: string, @Body() body: BulkInviteTenantUsersInput) { return this.access.inviteUsersBulk(tenant, body); }
   @Post('users/:id/invitation') @RequirePermissions(PERMISSIONS.USER_CREATE) @ApiOperation({ summary: 'Rotate and resend an unaccepted tenant user invitation' }) resendInvitation(@CurrentTenant() tenant: string, @Param('id') id: string) { return this.access.resendInvitation(tenant, id); }
+  @Post('users/:id/password-reset-link') @RequirePermissions(PERMISSIONS.USER_CREATE) @ApiOperation({ summary: 'Send a one-time password reset link to an active tenant user' }) sendPasswordResetLink(@CurrentTenant() tenant: string, @Param('id') id: string) { return this.access.sendPasswordResetLink(tenant, id); }
   @Patch('users/:id') @RequirePermissions(PERMISSIONS.USER_CREATE) @UsePipes(new ZodValidationPipe(updateTenantUserProfileSchema)) updateUser(@CurrentTenant() tenant: string, @Param('id') id: string, @Body() body: UpdateTenantUserProfileInput) { return this.access.updateUserProfile(tenant, id, body); }
   @Post('users/:id/password-reset') @RequirePermissions(PERMISSIONS.USER_CREATE) @UsePipes(new ZodValidationPipe(resetTenantUserPasswordSchema)) resetPassword(@CurrentTenant() tenant: string, @Param('id') id: string, @Body() body: { temporaryPassword: string }) { return this.access.resetTemporaryPassword(tenant, id, body.temporaryPassword); }
   @Patch('users/:id/roles') @RequirePermissions(PERMISSIONS.ROLE_ASSIGN) @UsePipes(new ZodValidationPipe(assignUserRolesSchema)) assignRoles(@CurrentTenant() tenant: string, @Param('id') id: string, @Body() body: AssignUserRolesInput) { return this.access.assignRoles(tenant, id, body); }

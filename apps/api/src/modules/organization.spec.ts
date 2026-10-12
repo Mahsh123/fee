@@ -25,6 +25,33 @@ function makeService(options: {
 }
 
 describe('organization API tenant and branch scope', () => {
+  it('lets a tenant administrator replace a user’s generic group memberships with audit and session revocation', async () => {
+    const context = new TenantContextService();
+    const unitFindMany = vi.fn(async () => [{ id: 'unit-a' }, { id: 'unit-b' }]);
+    const existingFindMany = vi.fn(async () => [{ unitId: 'unit-a' }]);
+    const deleteMany = vi.fn(async () => ({ count: 1 }));
+    const createMany = vi.fn(async () => ({ count: 1 }));
+    const refreshUpdateMany = vi.fn(async () => ({ count: 2 }));
+    const auditRecord = vi.fn(async () => undefined);
+    const tx = {
+      userOrganizationMembership: { findMany: existingFindMany, deleteMany, createMany },
+      refreshToken: { updateMany: refreshUpdateMany },
+    };
+    const service = new OrganizationService({
+      db: { user: { findFirst: vi.fn(async () => ({ id: 'user-a' })) }, organizationUnit: { findMany: unitFindMany } },
+      transactionWithRetry: vi.fn(async (work: (client: typeof tx) => Promise<unknown>) => work(tx)),
+    } as never, { record: auditRecord } as never, context);
+
+    const result = await context.run({ tenantId: 'tenant-a', userId: 'admin-a', roles: ['TENANT_ADMIN'], requestId: 'user-group-scope' }, () =>
+      service.replaceUserOrganizationUnits('tenant-a', 'user-a', { unitIds: ['unit-a', 'unit-b'] }),
+    );
+
+    expect(result).toEqual({ userId: 'user-a', unitIds: ['unit-a', 'unit-b'] });
+    expect(createMany).toHaveBeenCalledWith({ data: [{ tenantId: 'tenant-a', userId: 'user-a', unitId: 'unit-a' }, { tenantId: 'tenant-a', userId: 'user-a', unitId: 'unit-b' }] });
+    expect(refreshUpdateMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a', userId: 'user-a', revokedAt: null }, data: { revokedAt: expect.any(Date) } });
+    expect(auditRecord).toHaveBeenCalledWith(tx, expect.objectContaining({ action: 'user.organization_units.updated', before: { unitIds: ['unit-a'] }, after: { unitIds: ['unit-a', 'unit-b'] } }));
+  });
+
   it('returns a generic dashboard filtered to a manager’s branch scope', async () => {
     const branchFindMany = vi.fn(async () => [{ id: 'branch-a' }]);
     const membershipFindMany = vi.fn(async () => [{ userId: 'user-a' }, { userId: 'user-b' }]);

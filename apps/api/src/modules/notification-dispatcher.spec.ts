@@ -104,4 +104,30 @@ describe('tenant invitation email dispatch', () => {
     expect(notificationUpsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ event: 'USER_EMAIL_VERIFICATION', toAddress: 'new@example.test' }) }));
     expect(queueAdd).toHaveBeenCalledWith('deliver-email', expect.objectContaining({ to: 'new@example.test', subject: 'Verify your new email address' }), expect.any(Object));
   });
+
+  it('queues an active user password reset only when the stored token still matches', async () => {
+    const token = 'one-time-password-reset-token';
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const userFindFirst = vi.fn(async () => ({ id: 'user-a', email: 'person@example.test', firstName: 'Asha' }));
+    const notificationUpsert = vi.fn(async () => ({ id: 'notification-reset', status: 'QUEUED' }));
+    const queueAdd = vi.fn(async () => ({}));
+    const dispatcher = new NotificationDispatcher(
+      { db: { user: { findFirst: userFindFirst }, notification: { upsert: notificationUpsert } } } as never,
+      new TenantContextService(),
+      { mail: { from: 'noreply@example.test' }, queueMaxAttempts: 4, queueBackoffMs: 250 } as never,
+    ) as unknown as {
+      createPasswordResetNotification: (event: { id: string; tenantId: string; eventType: string; aggregateId: string; attempts: number; payload: unknown }) => Promise<void>;
+      queue: { add: typeof queueAdd };
+    };
+    dispatcher.queue = { add: queueAdd };
+
+    await dispatcher.createPasswordResetNotification({
+      id: 'outbox-reset', tenantId: 'tenant-a', eventType: 'USER_PASSWORD_RESET', aggregateId: 'user-a', attempts: 0,
+      payload: { userId: 'user-a', tokenHash, resetUrl: `https://north.example.test/reset-password#${token}` },
+    });
+
+    expect(userFindFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ tenantId: 'tenant-a', id: 'user-a', status: 'ACTIVE', passwordResetTokenHash: tokenHash, passwordResetExpiresAt: { gt: expect.any(Date) } }) }));
+    expect(notificationUpsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ event: 'USER_PASSWORD_RESET', toAddress: 'person@example.test' }) }));
+    expect(queueAdd).toHaveBeenCalledWith('deliver-email', expect.objectContaining({ to: 'person@example.test', body: expect.stringContaining(`https://north.example.test/reset-password#${token}`) }), expect.any(Object));
+  });
 });

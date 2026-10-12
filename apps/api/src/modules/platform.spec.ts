@@ -73,6 +73,20 @@ function platformService(options: {
 }
 
 describe('platform administration tenant boundaries', () => {
+  it('validates workspace slug availability only for authenticated platform operators', async () => {
+    const findUnique = vi.fn(async ({ where }: { where: { slug: string } }) => where.slug === 'taken-workspace' ? { id: 'tenant-existing' } : null);
+    const { service, runAsSuperAdmin, context } = platformService({ tenantFindUnique: findUnique });
+
+    await expect(runAsSuperAdmin(() => service.checkTenantSlugAvailability('available-workspace')))
+      .resolves.toEqual({ slug: 'available-workspace', available: true, reason: null });
+    await expect(runAsSuperAdmin(() => service.checkTenantSlugAvailability('taken-workspace')))
+      .resolves.toEqual({ slug: 'taken-workspace', available: false, reason: 'in_use' });
+    await expect(runAsSuperAdmin(() => service.checkTenantSlugAvailability('platform')))
+      .resolves.toEqual({ slug: 'platform', available: false, reason: 'reserved' });
+    await expect(context.run({ tenantId: 'tenant-a', userId: 'tenant-admin', roles: ['TENANT_ADMIN'], requestId: 'slug-check-auth' }, () => service.checkTenantSlugAvailability('available-workspace')))
+      .rejects.toMatchObject({ status: 403 });
+  });
+
   it('runs branch management in an explicitly selected tenant scope as an audited platform operator', async () => {
     const { service, context, organization, runAsSuperAdmin } = platformService();
     let branchScope: ReturnType<TenantContextService['peek']>;

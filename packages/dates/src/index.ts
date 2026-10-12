@@ -290,7 +290,7 @@ export function installmentDueDates(input: InstallmentScheduleInput, endDate?: I
 // Display
 // ---------------------------------------------------------------------------
 
-export function formatDate(value: IsoDate | Date, dateFormat = 'dd-MM-yyyy'): string {
+export function formatDate(value: IsoDate | Date, dateFormat = 'dd/MM/yyyy'): string {
   const iso = toIsoDate(value);
   return format(parseIsoDate(iso), dateFormat);
 }

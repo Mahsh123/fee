@@ -5,13 +5,13 @@ import { ApplicationShell } from '../components/application-shell';
 import { TenantProvider } from '../components/tenant-provider';
 
 export const metadata: Metadata = {
-  title: { default: 'Workspace Platform', template: '%s | Workspace Platform' },
-  description: 'A secure platform for independent organization workspaces and configurable workflows.',
+  title: { default: 'Wasl', template: '%s | Wasl' },
+  description: 'Connect. Track. Report. Wasl brings independent organization workspaces and configurable workflows together securely.',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en-IN">
       <body>
         <TenantProvider>
           <SessionProvider>

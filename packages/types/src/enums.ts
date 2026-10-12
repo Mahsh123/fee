@@ -437,6 +437,7 @@ export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
 
 export const NOTIFICATION_EVENTS = [
   'USER_INVITATION',
+  'USER_PASSWORD_RESET',
   'PAYMENT_SUCCESS',
   'PAYMENT_FAILED',
   'PAYMENT_PENDING',

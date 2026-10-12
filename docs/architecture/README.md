@@ -7,6 +7,9 @@ subscriptions, entitlements, security, UI requirements, and production acceptanc
 criteria are tracked in the [multi-tenant SaaS requirements and design](multi-tenant-saas-requirements.md).
 The current source audit, end-to-end implementation matrix, and remaining production
 gaps are tracked in the [multi-tenant SaaS implementation review](multi-tenant-saas-review.md).
+The single-VPS release flow, immutable image tags, off-site encrypted backups,
+restore drill, RLS prerequisites, and production monitoring gaps are documented in
+the [production deployment and recovery runbook](production-deployment-hardening.md).
 
 ## The one principle everything else follows from
 

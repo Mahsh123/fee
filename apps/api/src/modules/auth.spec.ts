@@ -102,6 +102,75 @@ describe('authentication request audit context', () => {
     expect(userUpdateMany).not.toHaveBeenCalled();
   });
 
+  it('queues a tenant-host password reset without returning account-existence information', async () => {
+    const user = { id: 'user-a', email: 'person@example.test', firstName: 'Asha' };
+    const userFindFirst = vi.fn(async () => user);
+    const userUpdateMany = vi.fn(async () => ({ count: 1 }));
+    const outboxCreate = vi.fn(async () => ({}));
+    const auditRecord = vi.fn(async () => undefined);
+    const tx = { user: { updateMany: userUpdateMany }, outboxEvent: { create: outboxCreate } };
+    const prisma = {
+      db: { user: { findFirst: userFindFirst } },
+      transactionWithRetry: vi.fn(async (work: (transaction: typeof tx) => Promise<unknown>) => work(tx)),
+    };
+    const context = new TenantContextService();
+    const service = new AuthService(
+      prisma as never,
+      { generateToken: vi.fn(() => 'one-time-password-reset-token'), hashToken: vi.fn(() => 'sha256-reset-token') } as never,
+      {} as never, { record: auditRecord } as never,
+      { webAppUrl: 'https://platform.example.test', isProduction: true } as never, context,
+    );
+    const host = { kind: 'tenant' as const, hostname: 'north.example.test', baseDomain: 'example.test', tenantId: 'tenant-a', slug: 'north', name: 'North', status: 'ACTIVE' as const };
+
+    const result = await context.run({ requestId: 'password-reset-request', tenantHost: host }, () => service.requestPasswordReset({ email: 'person@example.test' }, { ip: '203.0.113.7' }));
+
+    expect(result).toEqual({ submitted: true });
+    expect(userFindFirst).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a', isPlatformAdmin: false, email: 'person@example.test', status: 'ACTIVE', deletedAt: null }, select: { id: true, email: true, firstName: true } });
+    expect(userUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { passwordResetTokenHash: 'sha256-reset-token', passwordResetExpiresAt: expect.any(Date) } }));
+    expect(outboxCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ eventType: 'USER_PASSWORD_RESET', payload: expect.objectContaining({ resetUrl: 'https://north.example.test/reset-password#one-time-password-reset-token' }) }) }));
+    expect(auditRecord).toHaveBeenCalledWith(tx, expect.objectContaining({ action: 'auth.password.reset.requested', requestId: 'password-reset-request' }));
+  });
+
+  it('returns the same password-recovery response for an unknown email and performs timing equalization', async () => {
+    const burnTime = vi.fn(async () => undefined);
+    const transactionWithRetry = vi.fn();
+    const context = new TenantContextService();
+    const service = new AuthService(
+      { db: { user: { findFirst: vi.fn(async () => null) } }, transactionWithRetry } as never,
+      { burnTime } as never, {} as never, {} as never, {} as never, context,
+    );
+    const host = { kind: 'tenant' as const, hostname: 'north.localhost', baseDomain: 'localhost', tenantId: 'tenant-a', slug: 'north', name: 'North', status: 'ACTIVE' as const };
+
+    await expect(context.run({ requestId: 'password-reset-unknown', tenantHost: host }, () => service.requestPasswordReset({ email: 'missing@example.test' }, {})))
+      .resolves.toEqual({ submitted: true });
+    expect(burnTime).toHaveBeenCalledOnce();
+    expect(transactionWithRetry).not.toHaveBeenCalled();
+  });
+
+  it('completes a one-time tenant password reset and revokes existing sessions', async () => {
+    const user = { id: 'user-a', email: 'person@example.test' };
+    const userFindFirst = vi.fn(async () => user);
+    const userUpdateMany = vi.fn(async () => ({ count: 1 }));
+    const refreshUpdateMany = vi.fn(async () => ({ count: 2 }));
+    const auditRecord = vi.fn(async () => undefined);
+    const tx = { user: { findFirst: userFindFirst, updateMany: userUpdateMany }, refreshToken: { updateMany: refreshUpdateMany } };
+    const prisma = { transactionWithRetry: vi.fn(async (work: (transaction: typeof tx) => Promise<unknown>) => work(tx)) };
+    const context = new TenantContextService();
+    const service = new AuthService(
+      prisma as never,
+      { hash: vi.fn(async () => 'new-password-hash'), hashToken: vi.fn(() => 'sha256-reset-token') } as never,
+      {} as never, { record: auditRecord } as never, {} as never, context,
+    );
+    const host = { kind: 'tenant' as const, hostname: 'north.example.test', baseDomain: 'example.test', tenantId: 'tenant-a', slug: 'north', name: 'North', status: 'ACTIVE' as const };
+
+    await expect(context.run({ requestId: 'password-reset-complete', tenantHost: host }, () => service.completePasswordReset({ token: 'one-time-password-reset-token', password: 'a-secure-new-password' }, { ip: '203.0.113.8' })))
+      .resolves.toEqual({ reset: true });
+    expect(userFindFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ tenantId: 'tenant-a', status: 'ACTIVE', passwordResetTokenHash: 'sha256-reset-token', passwordResetExpiresAt: { gt: expect.any(Date) } }) }));
+    expect(userUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ passwordHash: 'new-password-hash', passwordResetTokenHash: null, passwordResetExpiresAt: null, sessionVersion: { increment: 1 } }) }));
+    expect(refreshUpdateMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a', userId: 'user-a', revokedAt: null }, data: { revokedAt: expect.any(Date) } });
+    expect(auditRecord).toHaveBeenCalledWith(tx, expect.objectContaining({ action: 'auth.password.reset.completed', actorId: 'user-a' }));
+  });
+
   it('accepts a platform invitation only on the reserved platform host and verifies the platform account', async () => {
     const auditRecord = vi.fn(async () => undefined);
     const userFindFirst = vi.fn(async () => ({ id: 'operator-a', email: 'operator@example.test', status: 'INVITED' }));

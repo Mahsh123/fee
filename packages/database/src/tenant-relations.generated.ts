@@ -361,6 +361,18 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
             "field": "id"
           }
         ],
+        "AttendanceSession": [
+          {
+            "model": "AttendanceSession",
+            "field": "id"
+          }
+        ],
+        "AttendanceRecord": [
+          {
+            "model": "AttendanceRecord",
+            "field": "id"
+          }
+        ],
         "StudentGroup": [
           {
             "model": "StudentGroup",
@@ -754,6 +766,46 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
       }
     },
     "requestedBy": [
+      {
+        "model": "User",
+        "field": "id"
+      }
+    ]
+  },
+  "AttendanceRecord": {
+    "sessionId": [
+      {
+        "model": "AttendanceSession",
+        "field": "id"
+      }
+    ],
+    "studentId": [
+      {
+        "model": "Student",
+        "field": "id"
+      }
+    ],
+    "updatedBy": [
+      {
+        "model": "User",
+        "field": "id"
+      }
+    ]
+  },
+  "AttendanceSession": {
+    "academicUnitId": [
+      {
+        "model": "AcademicUnit",
+        "field": "id"
+      }
+    ],
+    "branchId": [
+      {
+        "model": "Branch",
+        "field": "id"
+      }
+    ],
+    "markedBy": [
       {
         "model": "User",
         "field": "id"
@@ -1820,6 +1872,18 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "StudentGuardian": [
           {
             "model": "StudentGuardian",
+            "field": "id"
+          }
+        ],
+        "AttendanceSession": [
+          {
+            "model": "AttendanceSession",
+            "field": "id"
+          }
+        ],
+        "AttendanceRecord": [
+          {
+            "model": "AttendanceRecord",
             "field": "id"
           }
         ],

@@ -82,20 +82,12 @@ export const envSchema = z.object({
   SEED_DEMO_EMAIL: z.string().optional(),
   SEED_DEMO_PASSWORD: z.string().optional(),
 
-  S3_ENDPOINT: z.string().optional(),
-  S3_REGION: z.string().default('ap-south-1'),
-  S3_BUCKET: z.string().default('fee-platform-documents'),
-  S3_ACCESS_KEY_ID: z.string().optional(),
-  S3_SECRET_ACCESS_KEY: z.string().optional(),
-  S3_FORCE_PATH_STYLE: booleanish.default(true),
-  S3_SIGNED_URL_TTL: positiveInt(900),
-
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: positiveInt(587),
   SMTP_SECURE: booleanish.default(false),
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
-  SMTP_FROM: z.string().default('Fee Platform <no-reply@example.com>'),
+  SMTP_FROM: z.string().default('Wasl <no-reply@example.com>'),
   NOTIFICATION_WORKER_HMAC_SECRET: z.string().min(32, 'NOTIFICATION_WORKER_HMAC_SECRET must be at least 32 characters'),
 
   PAYMENT_DEFAULT_PROVIDER: z.enum(['RAZORPAY', 'CASHFREE', 'PAYU', 'STRIPE', 'MOCK']).default('MOCK'),
@@ -126,10 +118,6 @@ export const envSchema = z.object({
 
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   LOG_PRETTY: booleanish.default(true),
-  SENTRY_DSN: z.string().optional(),
-  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
-  OTEL_SERVICE_NAME: z.string().default('fee-platform-api'),
-
   RATE_LIMIT_TTL_SECONDS: positiveInt(60),
   RATE_LIMIT_MAX: positiveInt(120),
   WEBHOOK_RATE_LIMIT_MAX: positiveInt(600),
@@ -367,16 +355,6 @@ export class RuntimeConfig {
       ttlSeconds: this.env.RATE_LIMIT_TTL_SECONDS,
       max: this.env.RATE_LIMIT_MAX,
       webhookMax: this.env.WEBHOOK_RATE_LIMIT_MAX,
-    };
-  }
-
-  get storage(): { endpoint?: string; region: string; bucket: string; forcePathStyle: boolean; signedUrlTtl: number } {
-    return {
-      endpoint: this.env.S3_ENDPOINT,
-      region: this.env.S3_REGION,
-      bucket: this.env.S3_BUCKET,
-      forcePathStyle: this.env.S3_FORCE_PATH_STYLE,
-      signedUrlTtl: this.env.S3_SIGNED_URL_TTL,
     };
   }
 

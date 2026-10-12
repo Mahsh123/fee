@@ -274,6 +274,10 @@ export class NotificationDispatcher implements OnModuleInit, OnModuleDestroy {
       await this.createEmailVerificationNotification(event);
       return;
     }
+    if (event.eventType === 'USER_PASSWORD_RESET') {
+      await this.createPasswordResetNotification(event);
+      return;
+    }
     const notificationEvent = EVENT_MAP[event.eventType];
     if (!notificationEvent || !NOTIFICATION_EVENTS.includes(notificationEvent)) return;
     const payload = objectValue(event.payload);
@@ -440,6 +444,52 @@ export class NotificationDispatcher implements OnModuleInit, OnModuleDestroy {
     await this.queue!.add('deliver-email', {
       tenantId: event.tenantId, notificationId: notification.id, to: user.pendingEmail,
       subject, body, from: mail.from,
+    }, {
+      jobId: notification.id, attempts: this.config.queueMaxAttempts,
+      backoff: { type: 'exponential', delay: this.config.queueBackoffMs },
+      removeOnComplete: { age: 86_400, count: 10_000 }, removeOnFail: { age: 604_800, count: 10_000 },
+    });
+  }
+
+  private async createPasswordResetNotification(event: OutboxRow): Promise<void> {
+    const payload = objectValue(event.payload);
+    const userId = stringValue(payload.userId);
+    const resetUrl = stringValue(payload.resetUrl);
+    const expectedTokenHash = stringValue(payload.tokenHash);
+    if (!userId || !resetUrl || !expectedTokenHash || event.aggregateId !== userId) return;
+    const url = new URL(resetUrl);
+    const rawToken = url.hash.slice(1);
+    if (url.pathname !== '/reset-password' || !rawToken || createHash('sha256').update(rawToken).digest('hex') !== expectedTokenHash) return;
+    const now = new Date();
+    const user = await this.prisma.db.user.findFirst({
+      where: { tenantId: event.tenantId, id: userId, status: 'ACTIVE', deletedAt: null, passwordResetTokenHash: expectedTokenHash, passwordResetExpiresAt: { gt: now } },
+      select: { id: true, email: true, firstName: true },
+    });
+    if (!user) return;
+    const subject = 'Reset your Wasl workspace password';
+    const body = [
+      `Hello ${user.firstName},`,
+      '',
+      'A password reset was requested for your account. Use this secure link to choose a new password:',
+      resetUrl,
+      '',
+      'This link expires in 30 minutes and can be used once. If you did not request this, ignore this message; your password will not change.',
+    ].join('\n');
+    const dedupeKey = `${event.id}:${user.id}`;
+    const notification = await this.prisma.db.notification.upsert({
+      where: { tenantId_dedupeKey: { tenantId: event.tenantId, dedupeKey } },
+      create: {
+        tenantId: event.tenantId, event: 'USER_PASSWORD_RESET', channel: 'EMAIL', status: 'QUEUED',
+        recipientType: 'USER', recipientId: user.id, toAddress: user.email, subject, body,
+        payload: { purpose: 'USER_PASSWORD_RESET', userId: user.id }, dedupeKey,
+      },
+      update: {},
+      select: { id: true, status: true },
+    });
+    if (notification.status === 'SENT' || notification.status === 'DELIVERED') return;
+    const mail = this.config.mail;
+    await this.queue!.add('deliver-email', {
+      tenantId: event.tenantId, notificationId: notification.id, to: user.email, subject, body, from: mail.from,
     }, {
       jobId: notification.id, attempts: this.config.queueMaxAttempts,
       backoff: { type: 'exponential', delay: this.config.queueBackoffMs },

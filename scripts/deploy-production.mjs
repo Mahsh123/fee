@@ -19,6 +19,13 @@ const composeFile = 'docker-compose.prod.yml';
 const result = verifyComposeFile({ envFiles: [envFile], composeFile });
 console.log(`Production config verified for ${result.target.host}:${result.target.database}?schema=${result.target.schema}; roles ${result.migrationRole}, ${result.runtimeRole}, and ${result.backupRole} are distinct.`);
 
-execFileSync('docker', ['compose', '--env-file', resolve(envFile), '-f', resolve(composeFile), 'up', '-d'], {
+const composeArgs = ['compose', '--env-file', resolve(envFile), '-f', resolve(composeFile)];
+console.log('Pulling the immutable image tag configured in the production environment file.');
+execFileSync('docker', [...composeArgs, 'pull'], {
+  stdio: 'inherit',
+});
+
+console.log('Applying migrations and starting the production stack; waiting for health checks.');
+execFileSync('docker', [...composeArgs, 'up', '-d', '--wait', '--wait-timeout', '240'], {
   stdio: 'inherit',
 });

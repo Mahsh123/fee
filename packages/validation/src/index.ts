@@ -26,6 +26,7 @@ export * from './gateways';
 export * from './settings';
 export * from './access';
 export * from './academics';
+export * from './attendance';
 export * from './organization';
 export * from './tenant-operations';
 export * from './platform';

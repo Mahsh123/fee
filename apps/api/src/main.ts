@@ -45,7 +45,7 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks();
 
   await app.listen(config.port, '0.0.0.0');
-  logger.log(`Fee Platform API listening on http://localhost:${config.port}${config.apiBasePath}`);
+  logger.log(`Wasl API listening on http://localhost:${config.port}${config.apiBasePath}`);
   logger.log(`OpenAPI documentation at http://localhost:${config.port}/api/docs`);
 }
 
@@ -100,7 +100,7 @@ function configureRouting(app: INestApplication, config: AppConfigService): void
 
 function configureDocumentation(app: INestApplication, config: AppConfigService): void {
   const builder = new DocumentBuilder()
-    .setTitle('Fee Platform API')
+    .setTitle('Wasl API')
     .setDescription(
       [
         'Multi-tenant fee collection and payment management.',

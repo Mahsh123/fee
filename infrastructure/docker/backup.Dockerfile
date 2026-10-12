@@ -1,6 +1,6 @@
 FROM postgres:17-alpine
 
-RUN apk add --no-cache age \
+RUN apk add --no-cache age aws-cli \
     && mkdir -p /backups \
     && chown postgres:postgres /backups \
     && chmod 0700 /backups

@@ -24,8 +24,13 @@ describe('web application shell', () => {
     mockUseTenant.mockReturnValue({ kind: 'platform' });
     const markup = renderToStaticMarkup(createElement(HomePage));
     expect(markup).toContain('<main id="main-content"');
-    expect(markup).toContain('A PLATFORM FOR INDEPENDENT WORKSPACES');
-    expect(markup).toContain('Bring your organization and its work into one place.');
+    expect(markup).toContain('Wasl — وصل. Connect. Track. Report.');
+    expect(markup).toContain('WASL · ONE PLATFORM, INDEPENDENT WORKSPACES');
+    expect(markup).toContain('Fee Collection, teams and reports in one place.');
+    expect(markup).toContain('₹1,50,000');
+    expect(markup).toContain('₹25,000');
+    expect(markup).toContain('Super Admin sign in');
+    expect(markup).not.toContain('Explore the platform');
     expect(markup).not.toContain('Demo tenant');
   });
 

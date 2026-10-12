@@ -56,6 +56,11 @@ export const PERMISSIONS = {
   ADMISSION_UPDATE: 'admission.update',
   ADMISSION_CONFIRM: 'admission.confirm',
 
+  // Optional attendance workflow
+  ATTENDANCE_READ: 'attendance.read',
+  ATTENDANCE_MARK: 'attendance.mark',
+  ATTENDANCE_CORRECT: 'attendance.correct',
+
   // Fee configuration
   FEE_CATALOG_READ: 'fee.catalog.read',
   FEE_CATALOG_CREATE: 'fee.catalog.create',
@@ -198,6 +203,10 @@ export const PERMISSION_GROUPS: Array<{ group: string; permissions: PermissionKe
       PERMISSIONS.ADMISSION_UPDATE,
       PERMISSIONS.ADMISSION_CONFIRM,
     ],
+  },
+  {
+    group: 'Attendance',
+    permissions: [PERMISSIONS.ATTENDANCE_READ, PERMISSIONS.ATTENDANCE_MARK, PERMISSIONS.ATTENDANCE_CORRECT],
   },
   {
     group: 'Sponsors and payers',
@@ -446,6 +455,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
 
   ADMISSION_STAFF: [
     PERMISSIONS.STUDENT_READ,
+    PERMISSIONS.ATTENDANCE_READ,
+    PERMISSIONS.ATTENDANCE_MARK,
     PERMISSIONS.SPONSOR_READ,
     PERMISSIONS.STUDENT_CREATE,
     PERMISSIONS.GUARDIAN_READ,
@@ -506,6 +517,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
 
   REPORT_VIEWER: [
     PERMISSIONS.STUDENT_READ,
+    PERMISSIONS.ATTENDANCE_READ,
     PERMISSIONS.FEE_DEMAND_READ,
     PERMISSIONS.PAYMENT_READ,
     PERMISSIONS.RECEIPT_READ,
@@ -515,6 +527,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
 
   /** Portal accounts. A student sees only their own record. */
   STUDENT: [
+    PERMISSIONS.ATTENDANCE_READ,
     PERMISSIONS.FEE_DEMAND_READ,
     PERMISSIONS.PAYMENT_READ,
     PERMISSIONS.PAYMENT_COLLECT,
@@ -526,6 +539,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
 
   /** A parent may pay for their children but not administer the institution. */
   PARENT: [
+    PERMISSIONS.ATTENDANCE_READ,
     PERMISSIONS.FEE_DEMAND_READ,
     PERMISSIONS.PAYMENT_READ,
     PERMISSIONS.PAYMENT_COLLECT,

@@ -6,9 +6,11 @@ import {
   createBranchSchema, updateBranchSchema, replaceBranchMembersSchema,
   replaceUserBranchesSchema,
   createOrganizationUnitSchema, updateOrganizationUnitSchema, replaceOrganizationMembersSchema,
+  replaceUserOrganizationUnitsSchema,
   createUserAssignmentSchema, updateUserAssignmentSchema,
   type CreateBranchInput, type UpdateBranchInput, type ReplaceBranchMembersInput, type ReplaceUserBranchesInput,
   type CreateOrganizationUnitInput, type UpdateOrganizationUnitInput, type ReplaceOrganizationMembersInput,
+  type ReplaceUserOrganizationUnitsInput,
   type CreateUserAssignmentInput, type UpdateUserAssignmentInput,
 } from '@fee/validation';
 import { PERMISSIONS } from '@fee/types';
@@ -197,6 +199,24 @@ export class OrganizationService {
       await tx.refreshToken.updateMany({ where: { tenantId, userId, revokedAt: null }, data: { revokedAt: new Date() } });
       await this.audit.record(tx, { tenantId, actorId: actor.userId, action: 'user.branches.updated', entityType: 'User', entityId: userId, before: { branchIds: current.map(({ branchId }) => branchId) }, after: { branchIds, primaryBranchId } });
       return { userId, branchIds, primaryBranchId };
+    });
+  }
+
+  async replaceUserOrganizationUnits(tenantId: string, userId: string, input: ReplaceUserOrganizationUnitsInput) {
+    this.assertTenant(tenantId);
+    const actor = this.context.require();
+    this.assertTenantAdministrator(actor.roles ?? []);
+    await this.assertUser(tenantId, userId);
+    const unitIds = [...new Set(input.unitIds)];
+    const units = unitIds.length ? await this.prisma.db.organizationUnit.findMany({ where: { tenantId, id: { in: unitIds }, active: true }, select: { id: true } }) : [];
+    if (units.length !== unitIds.length) throw AppError.validation('Choose active groups from this organization.');
+    return this.prisma.transactionWithRetry(async (tx) => {
+      const current = await tx.userOrganizationMembership.findMany({ where: { tenantId, userId }, select: { unitId: true } });
+      await tx.userOrganizationMembership.deleteMany({ where: { tenantId, userId } });
+      if (unitIds.length) await tx.userOrganizationMembership.createMany({ data: unitIds.map((unitId) => ({ tenantId, userId, unitId })) });
+      await tx.refreshToken.updateMany({ where: { tenantId, userId, revokedAt: null }, data: { revokedAt: new Date() } });
+      await this.audit.record(tx, { tenantId, actorId: actor.userId, action: 'user.organization_units.updated', entityType: 'User', entityId: userId, before: { unitIds: current.map(({ unitId }) => unitId) }, after: { unitIds } });
+      return { userId, unitIds };
     });
   }
 
@@ -498,5 +518,16 @@ export class UserBranchesController {
   }
 }
 
-@Module({ imports: [PrismaModule, TenantContextModule, FinancialModule], controllers: [OrganizationDashboardController, BranchesController, OrganizationUnitsController, UserAssignmentsController, UserBranchesController], providers: [OrganizationService], exports: [OrganizationService] })
+@ApiTags('access management')
+@RequireModules('ORGANIZATION')
+@Controller('access/users')
+export class UserOrganizationUnitsController {
+  constructor(private readonly organization: OrganizationService) {}
+  @Put(':id/organization-units') @RequirePermissions(PERMISSIONS.ORGANIZATION_UNIT_MANAGE) @UsePipes(new ZodValidationPipe(replaceUserOrganizationUnitsSchema)) @ApiOperation({ summary: 'Assign tenant organization groups to a user' })
+  update(@CurrentTenant() tenant: string, @Param('id') id: string, @Body() body: ReplaceUserOrganizationUnitsInput) {
+    return this.organization.replaceUserOrganizationUnits(tenant, id, body);
+  }
+}
+
+@Module({ imports: [PrismaModule, TenantContextModule, FinancialModule], controllers: [OrganizationDashboardController, BranchesController, OrganizationUnitsController, UserAssignmentsController, UserBranchesController, UserOrganizationUnitsController], providers: [OrganizationService], exports: [OrganizationService] })
 export class OrganizationModule {}

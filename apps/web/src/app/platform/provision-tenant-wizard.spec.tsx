@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ProvisionTenantWizard, { buildTenantProvisionPayload } from './provision-tenant-wizard';
+import ProvisionTenantWizard, { buildTenantProvisionPayload, slugFromOrganizationName } from './provision-tenant-wizard';
+import { ORGANIZATION_CATEGORIES } from '@fee/types';
 
 const plans = [{
   id: 'plan-starter',
@@ -10,6 +11,8 @@ const plans = [{
   monthlyPrice: '100',
   currency: 'INR',
   active: true,
+  trialDays: 14,
+  entitlements: [{ entitlementKey: 'USERS', limitValue: 100 }],
   modules: [
     { moduleKey: 'WORKSPACE', enabled: true },
     { moduleKey: 'ORGANIZATION', enabled: true },
@@ -25,7 +28,7 @@ describe('Super Admin tenant provisioning wizard', () => {
   it('maps review form values to the existing provisioning request shape', () => {
     const values = new FormData();
     for (const [key, value] of Object.entries({
-      name: '  Cedar Club  ', organizationType: 'Club', contactEmail: '', contactPhone: ' 555-0100 ', countryCode: 'in',
+      name: '  Cedar Club  ', slug: 'cedar-club', organizationType: 'club_association', contactEmail: '', contactPhone: ' 555-0100 ', countryCode: 'in',
       currency: 'inr', currencySymbol: '₹', currencyMinorUnits: '2', timezone: 'Asia/Kolkata', locale: 'en-IN',
       tenantAdminEmail: 'admin@cedar.test', tenantAdminFirstName: 'Asha', tenantAdminLastName: '',
       planId: 'plan-starter', billingInterval: 'YEARLY',
@@ -35,7 +38,7 @@ describe('Super Admin tenant provisioning wizard', () => {
     const payload = buildTenantProvisionPayload(values);
 
     expect(payload).toMatchObject({
-      name: 'Cedar Club', organizationType: 'Club', contactEmail: null, contactPhone: '555-0100', countryCode: 'IN',
+      name: 'Cedar Club', slug: 'cedar-club', organizationType: 'club_association', contactEmail: null, contactPhone: '555-0100', countryCode: 'IN',
       currency: 'INR', currencyMinorUnits: 2, locale: 'en-IN', tenantAdminLastName: null,
       planId: 'plan-starter', billingInterval: 'YEARLY',
     });
@@ -53,6 +56,9 @@ describe('Super Admin tenant provisioning wizard', () => {
     expect(markup).toContain('aria-current="step"');
     expect(markup).toContain('Step 1 of 5: Organization');
     expect(markup).toContain('name="organizationType"');
+    expect(markup).toContain('Organisation category');
+    expect(markup).toContain('School');
+    expect(markup).toContain('name="slug"');
     expect(markup).toContain('name="enabledModules"');
     expect(markup).toContain('name="currencyMinorUnits"');
     expect(markup).toContain('name="tenantAdminEmail"');
@@ -70,5 +76,18 @@ describe('Super Admin tenant provisioning wizard', () => {
 
     expect(markup).toContain('No active plans are available');
     expect(markup).toContain('Create or activate a plan before provisioning a tenant');
+  });
+
+  it('generates a normalized slug from an organisation name and shares stable category identifiers', () => {
+    expect(slugFromOrganizationName('  Élan Coaching Centre  ')).toBe('elan-coaching-centre');
+    expect(ORGANIZATION_CATEGORIES.map(({ key }) => key)).toContain('club_association');
+    expect(ORGANIZATION_CATEGORIES.find(({ key }) => key === 'tuition_centre')?.groupLabel).toBe('Batches');
+  });
+
+  it('keeps custom category names on the generic workspace path', () => {
+    const values = new FormData();
+    values.set('organizationType', 'custom');
+    values.set('customOrganizationType', 'Community Support Group');
+    expect(buildTenantProvisionPayload(values).organizationType).toBe('Community Support Group');
   });
 });

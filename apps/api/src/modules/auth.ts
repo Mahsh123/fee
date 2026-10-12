@@ -23,11 +23,11 @@ import { InMemoryRateLimitStore, LoginRateLimitGuard, ZodValidationPipe } from '
 import { buildAuthenticatedUser, PasswordService, TokenService } from '../common/security';
 import { CurrentUser, PortalRoute, Public, TenantContextModule, TenantContextService } from '../common/tenancy';
 import { DEFAULT_ROLE_PERMISSIONS, PERMISSIONS, type RoleKey } from '@fee/types';
-import { acceptEmailChangeSchema, acceptInvitationSchema, changeOwnEmailSchema, changePasswordSchema, loginSchema, publicTenantRegistrationSchema, refreshSchema, updateOwnProfileSchema, type AcceptEmailChangeInput, type AcceptInvitationInput, type ChangeOwnEmailInput, type ChangePasswordInput, type LoginInput, type PublicTenantRegistrationInput, type RefreshInput, type UpdateOwnProfileInput } from '@fee/validation';
+import { acceptEmailChangeSchema, acceptInvitationSchema, changeOwnEmailSchema, changePasswordSchema, completePasswordResetSchema, loginSchema, publicTenantRegistrationSchema, refreshSchema, requestPasswordResetSchema, updateOwnProfileSchema, type AcceptEmailChangeInput, type AcceptInvitationInput, type ChangeOwnEmailInput, type ChangePasswordInput, type CompletePasswordResetInput, type LoginInput, type PublicTenantRegistrationInput, type RefreshInput, type RequestPasswordResetInput, type UpdateOwnProfileInput } from '@fee/validation';
 import { randomUUID } from 'node:crypto';
 import type { Response } from 'express';
 import { PLATFORM_SYSTEM_TENANT_SLUG } from '@fee/types';
-import { buildEmailChangeVerificationUrl, buildUserInvitationUrl, enqueueUserEmailVerification, enqueueUserInvitation } from '../common/invitations';
+import { buildEmailChangeVerificationUrl, buildPasswordResetUrl, buildUserInvitationUrl, enqueuePasswordReset, enqueueUserEmailVerification, enqueueUserInvitation } from '../common/invitations';
 import { assertTenantUserSeatAvailable } from '../common/user-limits';
 
 export { changePasswordSchema, loginSchema, refreshSchema } from '@fee/validation';
@@ -369,6 +369,97 @@ export class AuthService {
           before: { status: user.status }, after: { status: 'ACTIVE', emailVerified: true },
         });
         return { accepted: true as const };
+      }),
+    );
+  }
+
+  async requestPasswordReset(input: RequestPasswordResetInput, context: { requestId?: string; ip?: string; userAgent?: string }): Promise<{ submitted: true }> {
+    const host = this.tenantContext.requireTenantHost();
+    const isPlatformAdmin = host.kind === 'platform';
+    let tenantId: string;
+    if (host.kind === 'platform') {
+      const platformTenant = await this.prisma.db.tenant.findUnique({ where: { slug: PLATFORM_SYSTEM_TENANT_SLUG }, select: { id: true, status: true } });
+      if (!platformTenant || platformTenant.status !== 'ACTIVE') return { submitted: true };
+      tenantId = platformTenant.id;
+    } else if (host.kind === 'tenant' && host.status === 'ACTIVE') {
+      tenantId = host.tenantId;
+    } else {
+      return { submitted: true };
+    }
+    const requestId = context.requestId ?? this.tenantContext.peek()?.requestId ?? 'unknown';
+    const requestScope = { ...(this.tenantContext.peek() ?? { requestId }), tenantId, requestId, isPlatformAdmin };
+    return this.tenantContext.run(requestScope, async () => {
+      const user = await this.prisma.db.user.findFirst({
+        where: { tenantId, isPlatformAdmin, email: input.email, status: 'ACTIVE', deletedAt: null },
+        select: { id: true, email: true, firstName: true },
+      });
+      if (!user) {
+        await this.passwords.burnTime();
+        return { submitted: true };
+      }
+      const token = this.passwords.generateToken();
+      const tokenHash = this.passwords.hashToken(token);
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1_000);
+      const resetUrl = buildPasswordResetUrl(this.config.webAppUrl, host.hostname, token, this.config.isProduction);
+      await this.prisma.transactionWithRetry(async (tx) => {
+        const updated = await tx.user.updateMany({
+          where: { tenantId, id: user.id, isPlatformAdmin, email: user.email, status: 'ACTIVE', deletedAt: null },
+          data: { passwordResetTokenHash: tokenHash, passwordResetExpiresAt: expiresAt },
+        });
+        if (updated.count !== 1) return;
+        await enqueuePasswordReset(tx, { tenantId, userId: user.id, email: user.email, firstName: user.firstName, resetUrl, tokenHash });
+        await this.audit.record(tx, {
+          tenantId, actorId: user.id, actorEmail: user.email, action: 'auth.password.reset.requested', entityType: 'User', entityId: user.id,
+          requestId, ipAddress: context.ip ?? null, userAgent: context.userAgent ?? null,
+          after: { expiresAt: expiresAt.toISOString() },
+        });
+      });
+      return { submitted: true };
+    });
+  }
+
+  async completePasswordReset(input: CompletePasswordResetInput, context: { requestId?: string; ip?: string; userAgent?: string }): Promise<{ reset: true }> {
+    const host = this.tenantContext.requireTenantHost();
+    const isPlatformAdmin = host.kind === 'platform';
+    let tenantId: string;
+    if (host.kind === 'platform') {
+      const platformTenant = await this.prisma.db.tenant.findUnique({ where: { slug: PLATFORM_SYSTEM_TENANT_SLUG }, select: { id: true, status: true } });
+      if (!platformTenant || platformTenant.status !== 'ACTIVE') throw AppError.validation('This password reset link is invalid or expired. Request a new one.');
+      tenantId = platformTenant.id;
+    } else if (host.kind === 'tenant' && host.status === 'ACTIVE') {
+      tenantId = host.tenantId;
+    } else {
+      throw AppError.validation('This password reset link is invalid or expired. Request a new one.');
+    }
+    const tokenHash = this.passwords.hashToken(input.token);
+    const passwordHash = await this.passwords.hash(input.password);
+    const requestId = context.requestId ?? this.tenantContext.peek()?.requestId ?? 'unknown';
+    return this.tenantContext.run(
+      { ...(this.tenantContext.peek() ?? { requestId }), tenantId, requestId, isPlatformAdmin },
+      () => this.prisma.transactionWithRetry(async (tx) => {
+        const now = new Date();
+        const user = await tx.user.findFirst({
+          where: { tenantId, isPlatformAdmin, status: 'ACTIVE', deletedAt: null, passwordResetTokenHash: tokenHash, passwordResetExpiresAt: { gt: now } },
+          select: { id: true, email: true },
+        });
+        if (!user) throw AppError.validation('This password reset link is invalid or expired. Request a new one.');
+        const changed = await tx.user.updateMany({
+          where: { tenantId, id: user.id, isPlatformAdmin, status: 'ACTIVE', deletedAt: null, passwordResetTokenHash: tokenHash, passwordResetExpiresAt: { gt: now } },
+          data: {
+            passwordHash, mustChangePassword: false, failedLoginCount: 0, lockedUntil: null,
+            passwordResetTokenHash: null, passwordResetExpiresAt: null,
+            invitationTokenHash: null, invitationExpiresAt: null,
+            pendingEmail: null, emailChangeTokenHash: null, emailChangeExpiresAt: null,
+            sessionVersion: { increment: 1 }, updatedBy: user.id,
+          },
+        });
+        if (changed.count !== 1) throw AppError.conflict('PASSWORD_RESET_CHANGED', 'This password reset request changed while it was being used. Request a new link.');
+        await tx.refreshToken.updateMany({ where: { tenantId, userId: user.id, revokedAt: null }, data: { revokedAt: now } });
+        await this.audit.record(tx, {
+          tenantId, actorId: user.id, actorEmail: user.email, action: 'auth.password.reset.completed', entityType: 'User', entityId: user.id,
+          requestId, ipAddress: context.ip ?? null, userAgent: context.userAgent ?? null,
+        });
+        return { reset: true as const };
       }),
     );
   }
@@ -857,6 +948,28 @@ export class AuthController {
   acceptInvitation(@Body() body: AcceptInvitationInput, @Req() request: RequestWithContext): Promise<{ accepted: true }> {
     this.assertBrowserOrigin(request);
     return this.auth.acceptInvitation(body, authRequestContext(request));
+  }
+
+  @Post('forgot-password')
+  @Public()
+  @HttpCode(202)
+  @UseGuards(LoginRateLimitGuard)
+  @UsePipes(new ZodValidationPipe(requestPasswordResetSchema))
+  @ApiOperation({ summary: 'Send a tenant-aware password reset link without revealing whether an account exists' })
+  requestPasswordReset(@Body() body: RequestPasswordResetInput, @Req() request: RequestWithContext): Promise<{ submitted: true }> {
+    this.assertBrowserOrigin(request);
+    return this.auth.requestPasswordReset(body, authRequestContext(request));
+  }
+
+  @Post('reset-password')
+  @Public()
+  @HttpCode(200)
+  @UseGuards(LoginRateLimitGuard)
+  @UsePipes(new ZodValidationPipe(completePasswordResetSchema))
+  @ApiOperation({ summary: 'Complete a one-time tenant password reset and revoke prior sessions' })
+  completePasswordReset(@Body() body: CompletePasswordResetInput, @Req() request: RequestWithContext): Promise<{ reset: true }> {
+    this.assertBrowserOrigin(request);
+    return this.auth.completePasswordReset(body, authRequestContext(request));
   }
 
   @Post('accept-email-change')

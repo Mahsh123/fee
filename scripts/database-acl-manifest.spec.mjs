@@ -53,7 +53,7 @@ test('grants reviewed application access and keeps audit v2 direct access closed
     updateColumns: [
       ...AUTHENTICATION_USER_UPDATE_COLUMNS,
       'email', 'phone', 'firstName', 'lastName', 'status', 'updatedBy', 'passwordHash', 'mustChangePassword', 'sessionVersion',
-      'invitationTokenHash', 'invitationExpiresAt', 'emailVerifiedAt',
+      'invitationTokenHash', 'invitationExpiresAt', 'emailVerifiedAt', 'passwordResetTokenHash', 'passwordResetExpiresAt',
     ],
     insert: true,
     delete: false,
@@ -87,7 +87,7 @@ test('grants reviewed application access and keeps audit v2 direct access closed
     updateColumns: ['tenantId', 'isPrimary', 'verifiedAt', 'verificationToken'],
   });
   const tenantAdminColumns = new Set(legacy.runtime.get('users').updateColumns);
-  for (const column of ['email', 'phone', 'firstName', 'lastName', 'status', 'passwordHash', 'mustChangePassword', 'sessionVersion']) {
+  for (const column of ['email', 'phone', 'firstName', 'lastName', 'status', 'passwordHash', 'mustChangePassword', 'sessionVersion', 'passwordResetTokenHash', 'passwordResetExpiresAt']) {
     assert.ok(tenantAdminColumns.has(column), `users should allow reviewed administrator operation ${column}`);
   }
   // tenantId is in the ACL for explicit tenant scoping; the immutable

@@ -1,9 +1,10 @@
 'use client';
+import { formatIndianDate, formatIndianNumber } from '../lib/locale';
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { ArrowRight, ArrowUpRight, Building2, CheckCircle2, GraduationCap, Layers3, LockKeyhole, ReceiptText, UsersRound, WalletCards, BarChart3, BellRing, Settings2, ShieldCheck, Landmark, GitBranch, ClipboardList } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Building2, CheckCircle2, GraduationCap, LockKeyhole, ReceiptText, UsersRound, WalletCards, BarChart3, BellRing, Settings2, ShieldCheck, Landmark, GitBranch, ClipboardList } from 'lucide-react';
 import { apiRequest, platformHomeHref } from '../lib/api';
 import { sessionMatchesHost, useSession } from '../components/session-provider';
 import { useTenant } from '../components/tenant-provider';
@@ -42,70 +43,159 @@ export default function DashboardPage() {
 function TenantLanding({ tenant }: { tenant: Extract<ReturnType<typeof useTenant>, { kind: 'tenant' }> }) {
   const { branding } = tenant;
   const organizationName = branding.organizationName || tenant.name;
+  const landingTitle = branding.landingTitle?.trim() || 'A clear place for your organization to work.';
+  const landingDescription = branding.landingDescription?.trim() || 'Bring your people, locations, groups, and everyday workflows together in one private workspace.';
+  const landingActionLabel = branding.landingActionLabel?.trim() || 'Sign in to your workspace';
+  const organizationInitial = organizationName.trim().slice(0, 1).toUpperCase() || 'W';
   return <main id="main-content" className="tenant-landing">
-    <header className="landing-header">
-      <Link className="landing-brand" href="/" aria-label={`${organizationName} home`}>
-        {branding.logoUrl ? <img className="tenant-logo" src={branding.logoUrl} alt="" /> : <span className="brand-mark"><Landmark size={18} /></span>}
-        <span>{organizationName}</span>
+    <header className="tenant-public-header">
+      <Link className="tenant-public-brand" href="/" aria-label={`${organizationName} home`}>
+        {branding.logoUrl ? <img className="tenant-public-logo" src={branding.logoUrl} alt="" /> : <span className="tenant-public-mark" aria-hidden="true">{organizationInitial}</span>}
+        <span className="tenant-public-brand-copy"><strong>{organizationName}</strong><small>{tenant.organizationTypeLabel || 'Organization'} workspace</small></span>
       </Link>
-      <Link className="button button-secondary landing-sign-in" href="/login">Workspace sign in <ArrowRight size={15} /></Link>
+      <nav className="tenant-public-nav" aria-label="Workspace navigation">
+        <span><LockKeyhole size={14} /> Private workspace</span>
+        <Link className="button button-secondary" href="/login">Sign in <ArrowRight size={15} /></Link>
+      </nav>
     </header>
-    <section className="tenant-hero">
-      <div className="tenant-hero-copy">
-        <p className="eyebrow">{organizationName.toUpperCase()}</p>
-        <h1>{branding.landingTitle || `Welcome to ${organizationName}`}</h1>
-        <p className="landing-lede">{branding.landingDescription || 'A secure workspace for your team to organize people, locations, and the work your organization manages.'}</p>
-        <div className="landing-actions">
-          <Link className="button button-primary" href="/login">{branding.landingActionLabel || 'Sign in to your workspace'} <ArrowRight size={16} /></Link>
-          <Link className="landing-text-link" href="/register">{tenant.allowPublicRegistration ? 'Create a workspace account' : 'Request access'}</Link>
+    <section className="tenant-welcome" aria-labelledby="tenant-welcome-title">
+      <div className="tenant-welcome-copy">
+        <p className="tenant-welcome-kicker"><span aria-hidden="true" /> Welcome to {organizationName}</p>
+        <h1 id="tenant-welcome-title">{organizationName}</h1>
+        <h2>{landingTitle}</h2>
+        <p className="tenant-welcome-description">{landingDescription}</p>
+        <div className="tenant-welcome-actions">
+          <Link className="button button-primary" href="/login">{landingActionLabel} <ArrowRight size={16} /></Link>
+          <Link className="tenant-access-link" href="/register">{tenant.allowPublicRegistration ? 'Create an account' : 'Request access'}</Link>
         </div>
-        <p className="landing-security"><LockKeyhole size={15} /> Workspace information is available only to authorized users.</p>
+        <p className="tenant-welcome-security"><LockKeyhole size={15} /> Your organization controls access to this workspace.</p>
       </div>
-      <aside className="tenant-hero-card"><span className="tenant-hero-icon"><WalletCards size={27} /></span><p className="eyebrow">ORGANIZATION WORKSPACE</p><h2>Everything stays connected.</h2><p>Bring your team, locations, and enabled workflows together in one private workspace.</p><div className="tenant-hero-divider" /><span><CheckCircle2 size={16} /> Private to {organizationName}</span></aside>
+      <aside className="tenant-workspace-art" aria-label={`${organizationName} fee collection and analytics preview`}>
+        <FeeCollectionPreview organizationName={organizationName} />
+      </aside>
     </section>
-    <footer className="landing-footer"><span>{organizationName}</span><span>Private organization workspace</span><Link href="/login">Sign in</Link></footer>
+    <section className="tenant-wasl-section" aria-labelledby="tenant-wasl-title">
+      <div className="tenant-wasl-copy">
+        <p className="tenant-wasl-kicker">Powered by Wasl</p>
+        <h2 id="tenant-wasl-title">One platform. Independent workspaces.</h2>
+        <p>Wasl gives organizations a secure foundation for their people, access, branches, and the workflows they choose to use.</p>
+        <div className="tenant-wasl-capabilities" aria-label="Wasl platform capabilities"><span>People and access</span><span>Branches and groups</span><span>Flexible workflows</span></div>
+      </div>
+      <div className="tenant-wasl-lockup" aria-label="Wasl, Connect. Track. Report.">
+        <span className="tenant-wasl-mark" aria-hidden="true">و</span>
+        <span><strong>Wasl <span lang="ar" dir="rtl">وصل</span></strong><small>Connect. Track. Report.</small></span>
+      </div>
+    </section>
+    <footer className="tenant-public-footer"><span>{organizationName}</span><span>Private organization workspace</span><Link href={platformHomeHref()}>Powered by Wasl</Link></footer>
   </main>;
 }
 
 function PublicLanding() {
+  const [activeJourneyStep, setActiveJourneyStep] = useState(0);
+  const journeySteps = [
+    {
+      number: '01',
+      title: 'Create a workspace',
+      summary: 'Set up an organization and its workspace.',
+      description: 'A platform administrator configures the organization, workspace address, plan, and enabled modules. Wasl creates a private workspace for its team.',
+      icon: Building2,
+    },
+    {
+      number: '02',
+      title: 'Set up your team',
+      summary: 'Invite people and give them the right access.',
+      description: 'Tenant administrators add members, choose roles, and scope access to the branches and groups each person needs.',
+      icon: UsersRound,
+    },
+    {
+      number: '03',
+      title: 'Run your workflows',
+      summary: 'Work with only the modules your organization uses.',
+      description: 'Members use the enabled tools for their organization, manage day-to-day work, and review activity in reports.',
+      icon: Settings2,
+    },
+  ];
+  const activeStep = journeySteps[activeJourneyStep];
+  const ActiveStepIcon = activeStep.icon;
+
   return <main id="main-content" className="public-landing">
-    <header className="landing-header">
-      <Link className="landing-brand" href="/" aria-label="Workspace Platform home"><span className="brand-mark"><WalletCards size={19} /></span><span>Workspace Platform</span></Link>
-      <Link className="button button-secondary landing-sign-in" href="/login">Sign in <ArrowRight size={15} /></Link>
+    <header className="platform-landing-header">
+      <Link className="platform-landing-logo-link" href="/" aria-label="Wasl (وصل) home"><img className="platform-landing-logo" src="/wasl-logo.svg" alt="Wasl — وصل. Connect. Track. Report." /></Link>
     </header>
-    <section className="landing-hero">
-      <div className="landing-copy">
-        <p className="eyebrow">A PLATFORM FOR INDEPENDENT WORKSPACES</p>
-        <h1>Bring your organization and its work into one place.</h1>
-        <p className="landing-lede">Set up your people, branches, teams, access rules, and the optional workflows your organization needs.</p>
-        <div className="landing-actions">
-          <Link className="button button-primary" href="/login">Sign in to your workspace <ArrowRight size={16} /></Link>
-          <a className="landing-text-link" href="#platform-overview">Explore the platform</a>
+    <section className="platform-landing-hero" aria-labelledby="platform-landing-title">
+      <div className="platform-landing-copy">
+        <p className="platform-landing-eyebrow">WASL · ONE PLATFORM, INDEPENDENT WORKSPACES</p>
+        <h1 id="platform-landing-title">Fee Collection, teams and reports in one place.</h1>
+        <p className="platform-landing-description">Connect payments, attendance and everyday work in a private workspace shaped around each organization.</p>
+        <div className="platform-landing-actions">
+          <Link className="button button-primary platform-landing-cta" href="/login">Super Admin sign in <ArrowRight size={16} /></Link>
+          <a className="platform-landing-secondary" href="#platform-journey">Explore how Wasl works</a>
         </div>
-        <p className="landing-security"><LockKeyhole size={15} /> Every tenant workspace stays private to its authorized team.</p>
+        <div className="platform-landing-capabilities" aria-label="Platform capabilities"><span>Fee Collection</span><span>Attendance</span><span>Pending Fees</span><span>Receipts</span><span>Reports</span></div>
       </div>
-      <aside className="landing-workflow" aria-label="How a tenant workspace is organized">
-        <p className="landing-workflow-label">A CLEAR ORGANIZATION WORKSPACE</p>
-        <h2>Connect the people, places, and work.</h2>
-        <ol className="landing-steps">
-          <li><span className="landing-step-number">01</span><span><strong>Set up your workspace</strong><small>Choose the organization profile and included modules.</small></span><CheckCircle2 size={18} /></li>
-          <li><span className="landing-step-number">02</span><span><strong>Invite your team</strong><small>Assign roles and scope access to the right people.</small></span><CheckCircle2 size={18} /></li>
-          <li><span className="landing-step-number">03</span><span><strong>Organize work</strong><small>Use branches, departments, groups, and assignments.</small></span><CheckCircle2 size={18} /></li>
-          <li><span className="landing-step-number">04</span><span><strong>Add workflows</strong><small>Enable only the modules your plan and organization need.</small></span><CheckCircle2 size={18} /></li>
-        </ol>
-        <div className="landing-workflow-foot"><ShieldCheck size={16} /><span>Tenant-scoped workspace with auditable financial operations</span></div>
-      </aside>
+      <FeeCollectionPreview organizationName="Wasl sample workspace" />
     </section>
-    <section className="landing-capabilities" id="platform-overview">
-      <div className="landing-section-heading"><p className="eyebrow">ONE CONNECTED PLATFORM</p><h2>Build a workspace around your organization.</h2></div>
-      <div className="landing-capability-grid">
-        <article><span className="landing-capability-icon"><UsersRound size={19} /></span><h3>Shared organization core</h3><p>Manage members, branches, groups, roles, assignments, and settings from one tenant workspace.</p></article>
-        <article><span className="landing-capability-icon"><Layers3 size={19} /></span><h3>Optional modules</h3><p>Enable the workflows and features that fit each organization without changing its tenant structure.</p></article>
-        <article><span className="landing-capability-icon"><ShieldCheck size={19} /></span><h3>Scoped access</h3><p>Keep tenant data separated and grant each role only the actions it needs.</p></article>
+    <section id="platform-journey" className="platform-journey" aria-labelledby="platform-journey-title">
+      <div className="platform-journey-heading">
+        <p className="platform-landing-eyebrow">HOW WASL WORKS</p>
+        <h2 id="platform-journey-title">From setup to everyday work.</h2>
+        <p>Choose a step to see how an organization gets started.</p>
       </div>
+      <div className="platform-journey-stepper" data-active-step={activeJourneyStep} role="group" aria-label="Wasl setup steps">
+        <div className="platform-journey-track" aria-hidden="true">
+          <span className="platform-journey-track-fill" />
+        </div>
+        {journeySteps.map((step, index) => <button
+          key={step.number}
+          type="button"
+          className={`platform-journey-step${index === activeJourneyStep ? ' is-active' : ''}`}
+          aria-pressed={index === activeJourneyStep}
+          aria-controls="platform-journey-detail"
+          onClick={() => setActiveJourneyStep(index)}
+        >
+          <span className="platform-journey-number">{step.number}</span>
+          <span className="platform-journey-step-title">{step.title}</span>
+          <span className="platform-journey-step-summary">{step.summary}</span>
+        </button>)}
+      </div>
+      <article id="platform-journey-detail" className="platform-journey-detail" key={activeStep.number} aria-live="polite" aria-atomic="true">
+        <span className="platform-journey-detail-icon"><ActiveStepIcon size={23} aria-hidden="true" /></span>
+        <div>
+          <p className="platform-journey-detail-label">STEP {activeStep.number}</p>
+          <h3>{activeStep.title}</h3>
+          <p>{activeStep.description}</p>
+        </div>
+        <span className="platform-journey-detail-count">{activeStep.number} <span>/ 03</span></span>
+      </article>
     </section>
-    <footer className="landing-footer"><span>Workspace Platform</span><span>One platform, independent workspaces</span><Link href="/login">Sign in</Link></footer>
+    <footer className="platform-landing-footer"><span>Wasl · وصل</span><span>Connect. Track. Report.</span></footer>
   </main>;
+}
+
+function FeeCollectionPreview({ organizationName }: { organizationName: string }) {
+  return <div className="fee-preview-scene" role="group" aria-label="Illustrative fee collection receipt and analytics report">
+    <div className="fee-preview-report" role="img" aria-label="Fee Collection report: collected ₹1,50,000 this month, with an increasing monthly bar chart">
+      <div className="fee-preview-report-heading"><span className="fee-preview-icon"><BarChart3 size={17} /></span><span><small>ANALYTICS REPORT</small><strong>Fee Collection</strong></span><span className="fee-preview-period">This month</span></div>
+      <div className="fee-preview-total"><strong>₹1,50,000</strong><span>Collected this month</span></div>
+      <div className="fee-preview-chart" aria-hidden="true">
+        {[38, 54, 46, 73, 62, 91, 78, 100].map((height, index) => <span key={index} style={{ '--bar-height': `${height}%` } as React.CSSProperties} />)}
+      </div>
+      <div className="fee-preview-chart-labels"><span>04/10/2026</span><span>11/10/2026</span><span>18/10/2026</span><span>25/10/2026</span></div>
+      <div className="fee-preview-report-footer"><span><i /> Fee Collection</span><span><i /> Attendance</span></div>
+    </div>
+    <div className="fee-preview-receipt" role="img" aria-label="Sample receipt for Aarav Sharma: ₹25,000 collected, ₹1,500 pending, dated 11/10/2026">
+      <div className="fee-preview-receipt-brand"><span className="fee-preview-receipt-mark">و</span><span><strong>{organizationName}</strong><small>PAYMENT RECEIPT</small></span><ReceiptText size={18} /></div>
+      <div className="fee-preview-receipt-meta"><span>Receipt no.<strong>WSL-2026-00428</strong></span><span>Date<strong>11/10/2026</strong></span></div>
+      <div className="fee-preview-payer"><small>RECEIVED FROM</small><strong>Aarav Sharma</strong></div>
+      <div className="fee-preview-receipt-line"><span>Monthly fee</span><strong>₹25,000</strong></div>
+      <div className="fee-preview-receipt-line"><span>Service charge</span><strong>₹1,500</strong></div>
+      <div className="fee-preview-receipt-total"><span>Total fee</span><strong>₹26,500</strong></div>
+      <div className="fee-preview-receipt-paid"><span><CheckCircle2 size={15} /> Paid</span><strong>₹25,000</strong></div>
+      <div className="fee-preview-pending"><span>Pending Fees</span><strong>₹1,500</strong></div>
+      <div className="fee-preview-receipt-note">Sample data · receipt preview</div>
+    </div>
+    <span className="fee-preview-attendance"><CheckCircle2 size={15} /> Attendance recorded</span>
+  </div>;
 }
 
 function WorkspaceDashboard() {
@@ -145,7 +235,7 @@ function WorkspaceDashboard() {
       <Metric label="Departments and groups" value={overview?.counts.organizationUnitCount} icon={<GitBranch size={19} />} color="amber" />
       <Metric label="Open assignments" value={overview?.counts.openAssignments} icon={<ClipboardList size={19} />} color="green" />
     </section>
-    <section className="dashboard-subscription-card"><div><p className="eyebrow">SUBSCRIPTION</p><strong>{overview?.subscription.plan ?? 'Plan not assigned'}</strong><span>{overview ? overview.subscription.status.replaceAll('_', ' ').toLowerCase() : 'Loading plan details'}{overview?.subscription.periodEnd ? ` · Renews ${new Date(overview.subscription.periodEnd).toLocaleDateString()}` : overview?.subscription.trialEndsAt ? ` · Trial ends ${new Date(overview.subscription.trialEndsAt).toLocaleDateString()}` : ''}</span></div><div className="dashboard-module-tags">{(overview?.modules ?? (tenant.kind === 'tenant' ? tenant.enabledModules : [])).map((moduleKey) => <span key={moduleKey}>{moduleKey.replaceAll('_', ' ').toLowerCase()}</span>)}</div></section>
+    <section className="dashboard-subscription-card"><div><p className="eyebrow">SUBSCRIPTION</p><strong>{overview?.subscription.plan ?? 'Plan not assigned'}</strong><span>{overview ? overview.subscription.status.replaceAll('_', ' ').toLowerCase() : 'Loading plan details'}{overview?.subscription.periodEnd ? ` · Renews ${formatIndianDate(new Date(overview.subscription.periodEnd))}` : overview?.subscription.trialEndsAt ? ` · Trial ends ${formatIndianDate(new Date(overview.subscription.trialEndsAt))}` : ''}</span></div><div className="dashboard-module-tags">{(overview?.modules ?? (tenant.kind === 'tenant' ? tenant.enabledModules : [])).map((moduleKey) => <span key={moduleKey}>{moduleKey.replaceAll('_', ' ').toLowerCase()}</span>)}</div></section>
     {overview?.onboarding.length ? <section className="surface-panel dashboard-onboarding"><div className="section-heading"><div><h2>Getting started</h2><p>Recommended steps for setting up your organization workspace.</p></div><CheckCircle2 size={18} /></div><div className="dashboard-onboarding-list">{overview.onboarding.map((task) => <div key={task.key}><span className={task.complete ? 'dashboard-task-complete' : 'dashboard-task-open'}>{task.complete ? '✓' : '•'}</span><span>{task.label}</span><small>{task.complete ? 'Done' : 'Next step'}</small></div>)}</div></section> : null}
     <div className="section-heading"><div><h2>Available workspaces</h2><p>Only features enabled for this organization and your role are shown.</p></div></div>
     <section className="workspace-grid">{workspaces.map((item) => <Workspace key={item.href + item.title} href={item.href} icon={item.icon} title={item.title} description={item.description} label={item.label} />)}</section>
@@ -153,7 +243,7 @@ function WorkspaceDashboard() {
 }
 
 function Metric({ label, value, icon, color }: { label: string; value?: number; icon: React.ReactNode; color: string }) {
-  return <article className="metric-card"><div className={`metric-icon ${color}`}>{icon}</div><p>{label}</p><strong>{value === undefined ? '—' : value.toLocaleString()}</strong><small>{value === undefined ? 'Loading total' : 'In your allowed scope'}</small></article>;
+  return <article className="metric-card"><div className={`metric-icon ${color}`}>{icon}</div><p>{label}</p><strong>{value === undefined ? '—' : formatIndianNumber(value)}</strong><small>{value === undefined ? 'Loading total' : 'In your allowed scope'}</small></article>;
 }
 
 function Workspace({ href, icon, title, description, label }: { href: string; icon: React.ReactNode; title: string; description: string; label: string }) {

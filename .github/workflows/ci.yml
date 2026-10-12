@@ -212,41 +212,89 @@ jobs:
         run: npm test
 
   containers:
-    name: Build container images
+    name: Build and publish versioned container images
     runs-on: ubuntu-latest
     needs: verify
     timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build the API image
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish the API image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: infrastructure/docker/api.Dockerfile
+          target: production-runtime
           build-args: APP=api
-          push: false
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ghcr.io/mahsh123/fee-api:sha-${{ github.sha }}
+            ghcr.io/mahsh123/fee-api:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build the worker image
+      - name: Build and publish the worker image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: infrastructure/docker/api.Dockerfile
+          target: production-runtime
           build-args: APP=worker
-          push: false
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ghcr.io/mahsh123/fee-worker:sha-${{ github.sha }}
+            ghcr.io/mahsh123/fee-worker:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build the web image
+      - name: Build and publish the operations image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/docker/api.Dockerfile
+          target: runtime
+          build-args: APP=operations
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ghcr.io/mahsh123/fee-operations:sha-${{ github.sha }}
+            ghcr.io/mahsh123/fee-operations:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and publish the web image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: infrastructure/docker/web.Dockerfile
           build-args: NEXT_PUBLIC_PLATFORM_SUBDOMAIN=${{ vars.PLATFORM_SUBDOMAIN || 'platform' }}
-          push: false
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ghcr.io/mahsh123/fee-web:sha-${{ github.sha }}
+            ghcr.io/mahsh123/fee-web:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and publish the encrypted backup image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/docker/backup.Dockerfile
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ghcr.io/mahsh123/fee-backup:sha-${{ github.sha }}
+            ghcr.io/mahsh123/fee-backup:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
