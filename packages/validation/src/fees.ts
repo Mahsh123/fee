@@ -224,14 +224,39 @@ export const createFeeAssignmentSchema = z.object({
   targetType: z.enum(ASSIGNMENT_TARGET_TYPES),
   targetId: uuid.nullable().optional(),
   targetStudentIds: z.array(uuid).max(5000).optional(),
+  targetPersonIds: z.array(uuid).max(5000).optional(),
   academicYearId: uuid.nullable().optional(),
   dueDateOverride: date.nullable().optional(),
   installmentRule: installmentRuleSchema.nullable().optional(),
 }).superRefine((value, context) => {
   if (value.targetType === 'STUDENT' && !value.targetStudentIds?.length) context.addIssue({ code: 'custom', path: ['targetStudentIds'], message: 'Select at least one student for a student-targeted assignment.' });
+  if (value.targetType === 'PERSON' && !value.targetPersonIds?.length && !value.targetId) context.addIssue({ code: 'custom', path: ['targetPersonIds'], message: 'Select people or choose a people group for this assignment.' });
+  if (value.targetType === 'PERSON' && value.targetPersonIds?.length && value.targetId) context.addIssue({ code: 'custom', path: ['targetId'], message: 'Choose either a people group or specific people, not both.' });
+  if (value.targetType === 'PERSON' && value.academicYearId) context.addIssue({ code: 'custom', path: ['academicYearId'], message: 'Academic year is only used by education-specific student assignments.' });
   if (value.targetType === 'CUSTOM_GROUP' && !value.targetId) context.addIssue({ code: 'custom', path: ['targetId'], message: 'Select a student group for this assignment.' });
 });
 export const updateFeeAssignmentSchema = z.object({ dueDateOverride: date.nullable(), branchId: uuid.optional() });
+
+export const generateFeeAssignmentCycleSchema = z.object({
+  frequency: z.enum(['ONE_TIME', 'MONTHLY', 'QUARTERLY', 'HALF_YEARLY', 'ANNUAL', 'TERM', 'SEMESTER']),
+  periodStart: date,
+  periodEnd: date,
+  dueDate: date,
+  usageInputs: z.array(z.object({
+    personId: uuid,
+    feeStructureItemId: uuid,
+    quantity: z.string().regex(/^\d{1,8}(?:\.\d{1,4})?$/, 'Enter a non-negative quantity with up to four decimal places.'),
+  }).strict()).max(10_000),
+}).strict().superRefine((value, context) => {
+  if (value.periodEnd < value.periodStart) context.addIssue({ code: 'custom', path: ['periodEnd'], message: 'The billing period end must be on or after its start.' });
+  if (value.dueDate < value.periodStart) context.addIssue({ code: 'custom', path: ['dueDate'], message: 'The due date cannot be before the billing period starts.' });
+  const keys = new Set<string>();
+  value.usageInputs.forEach((input, index) => {
+    const key = `${input.personId}:${input.feeStructureItemId}`;
+    if (keys.has(key)) context.addIssue({ code: 'custom', path: ['usageInputs', index], message: 'A person can have only one quantity for each fee item in a billing cycle.' });
+    keys.add(key);
+  });
+});
 
 
 export type CreateFeeCategoryInput = z.infer<typeof createFeeCategorySchema>;
@@ -251,6 +276,7 @@ export type UpdateFeePolicyInput = z.infer<typeof updateFeePolicySchema>;
 export type FeePolicyPreviewInput = z.infer<typeof feePolicyPreviewSchema>;
 export type CreateFeeAssignmentInput = z.infer<typeof createFeeAssignmentSchema>;
 export type UpdateFeeAssignmentInput = z.infer<typeof updateFeeAssignmentSchema>;
+export type GenerateFeeAssignmentCycleInput = z.infer<typeof generateFeeAssignmentCycleSchema>;
 export type InstallmentRuleInput = z.infer<typeof installmentRuleSchema>;
 
 function percentUnits(value: string): bigint {

@@ -11,10 +11,21 @@
  */
 export declare const TENANT_STATUSES: readonly ["TRIAL", "ACTIVE", "SUSPENDED", "ARCHIVED"];
 export type TenantStatus = (typeof TENANT_STATUSES)[number];
+/** Administrative subscription state, distinct from tenant access lifecycle. */
+export declare const SUBSCRIPTION_STATUSES: readonly ["TRIAL", "ACTIVE", "PAST_DUE", "PAUSED", "CANCELLED", "EXPIRED"];
+export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 export declare const USER_STATUSES: readonly ["INVITED", "ACTIVE", "SUSPENDED", "DISABLED"];
 export type UserStatus = (typeof USER_STATUSES)[number];
-export declare const ROLE_KEYS: readonly ["PLATFORM_ADMIN", "TENANT_OWNER", "TENANT_ADMIN", "FINANCE_ADMIN", "FINANCE_STAFF", "ADMISSION_STAFF", "COLLECTION_STAFF", "ACCOUNTANT", "REPORT_VIEWER", "STUDENT", "PARENT"];
+export declare const ROLE_KEYS: readonly ["PLATFORM_ADMIN", "TENANT_OWNER", "TENANT_ADMIN", "TENANT_MEMBER", "FINANCE_ADMIN", "FINANCE_STAFF", "ADMISSION_STAFF", "COLLECTION_STAFF", "ACCOUNTANT", "REPORT_VIEWER", "STUDENT", "PARENT"];
 export type RoleKey = (typeof ROLE_KEYS)[number];
+export declare const STUDENT_STATUSES: readonly ["PROSPECT", "ACTIVE", "ON_LEAVE", "SUSPENDED", "WITHDRAWN", "ALUMNI"];
+export type StudentStatus = (typeof STUDENT_STATUSES)[number];
+export declare const GUARDIAN_RELATIONS: readonly ["FATHER", "MOTHER", "GUARDIAN", "SPONSOR_CONTACT", "OTHER"];
+export type GuardianRelation = (typeof GUARDIAN_RELATIONS)[number];
+export declare const ADMISSION_STATUSES: readonly ["DRAFT", "SUBMITTED", "UNDER_REVIEW", "FEES_PENDING", "CONFIRMED", "REJECTED", "CANCELLED", "ENROLLED"];
+export type AdmissionStatus = (typeof ADMISSION_STATUSES)[number];
+export declare const FEE_CATEGORY_KINDS: readonly ["ACADEMIC", "ADMISSION", "EXAMINATION", "TRANSPORT", "HOSTEL", "LIBRARY", "LABORATORY", "ACTIVITIES", "ADMINISTRATIVE", "OTHER"];
+export type FeeCategoryKind = (typeof FEE_CATEGORY_KINDS)[number];
 export declare const FEE_CALCULATION_METHODS: readonly ["FIXED", "PERCENTAGE", "QUANTITY", "USAGE", "FORMULA", "CUSTOM"];
 export type FeeCalculationMethod = (typeof FEE_CALCULATION_METHODS)[number];
 export declare const FEE_FREQUENCIES: readonly ["ONE_TIME", "MONTHLY", "QUARTERLY", "HALF_YEARLY", "ANNUAL", "TERM", "SEMESTER", "CUSTOM_DATE", "EVENT_BASED"];
@@ -126,6 +137,11 @@ export declare const SYSTEM_LEDGER_ACCOUNTS: {
         readonly type: LedgerAccountType;
         readonly name: "Sponsor Payable";
     };
+    readonly UNAPPLIED_GATEWAY_RECEIPTS: {
+        readonly code: "2500";
+        readonly type: LedgerAccountType;
+        readonly name: "Unapplied Gateway Receipts";
+    };
     readonly FEE_INCOME: {
         readonly code: "4000";
         readonly type: LedgerAccountType;
@@ -183,7 +199,7 @@ export declare const SYSTEM_LEDGER_ACCOUNTS: {
     };
 };
 export type SystemLedgerAccountKey = keyof typeof SYSTEM_LEDGER_ACCOUNTS;
-export declare const ACADEMIC_UNIT_TYPES: readonly ["PROGRAM", "CLASS", "SECTION", "BATCH", "DEPARTMENT", "HOSTEL", "TRANSPORT_ROUTE"];
+export declare const ACADEMIC_UNIT_TYPES: readonly ["COURSE", "PROGRAM", "CLASS", "SECTION", "BATCH", "DEPARTMENT", "HOSTEL", "TRANSPORT_ROUTE"];
 export type AcademicUnitType = (typeof ACADEMIC_UNIT_TYPES)[number];
 export declare const ASSIGNMENT_TARGET_TYPES: readonly ["STUDENT", "CLASS", "SECTION", "BATCH", "COURSE", "DEPARTMENT", "PROGRAM", "HOSTEL", "TRANSPORT_ROUTE", "CUSTOM_GROUP"];
 export type AssignmentTargetType = (typeof ASSIGNMENT_TARGET_TYPES)[number];
@@ -195,15 +211,15 @@ export declare const OVERPAYMENT_POLICIES: readonly ["REJECT", "CREDIT_BALANCE",
 export type OverpaymentPolicy = (typeof OVERPAYMENT_POLICIES)[number];
 export declare const ROUNDING_MODES: readonly ["HALF_UP", "HALF_EVEN", "FLOOR", "CEIL", "NONE"];
 export type RoundingModeName = (typeof ROUNDING_MODES)[number];
-export declare const APPROVAL_ACTION_TYPES: readonly ["REFUND", "FEE_WAIVER", "MANUAL_ADJUSTMENT", "STUDENT_OVERRIDE", "SCHOLARSHIP", "WRITE_OFF", "FEE_STRUCTURE_CHANGE", "CREDIT_APPLICATION"];
+export declare const APPROVAL_ACTION_TYPES: readonly ["REFUND", "FEE_WAIVER", "MANUAL_ADJUSTMENT", "STUDENT_OVERRIDE", "SCHOLARSHIP", "WRITE_OFF", "FEE_STRUCTURE_CHANGE", "CREDIT_APPLICATION", "PAYMENT_COLLECTION"];
 export type ApprovalActionType = (typeof APPROVAL_ACTION_TYPES)[number];
 export declare const APPROVAL_STATUSES: readonly ["PENDING", "APPROVED", "REJECTED", "CANCELLED", "EXECUTED"];
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 export declare const NOTIFICATION_CHANNELS: readonly ["EMAIL", "SMS", "WHATSAPP", "PUSH", "IN_APP"];
 export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
-export declare const NOTIFICATION_EVENTS: readonly ["PAYMENT_SUCCESS", "PAYMENT_FAILED", "PAYMENT_PENDING", "RECEIPT_GENERATED", "FEE_DUE", "FEE_OVERDUE", "INSTALLMENT_DUE", "ADMISSION_PAYMENT", "REFUND", "SCHOLARSHIP_APPLIED"];
+export declare const NOTIFICATION_EVENTS: readonly ["USER_INVITATION", "USER_PASSWORD_RESET", "PAYMENT_SUCCESS", "PAYMENT_FAILED", "PAYMENT_PENDING", "RECEIPT_GENERATED", "FEE_DUE", "FEE_OVERDUE", "INSTALLMENT_DUE", "ADMISSION_PAYMENT", "REFUND", "SCHOLARSHIP_APPLIED"];
 export type NotificationEvent = (typeof NOTIFICATION_EVENTS)[number];
-export declare const SEQUENCE_KINDS: readonly ["RECEIPT", "INVOICE", "PAYMENT", "DEMAND", "APPLICATION", "STUDENT", "REFUND", "CREDIT_NOTE"];
+export declare const SEQUENCE_KINDS: readonly ["RECEIPT", "INVOICE", "PAYMENT", "DEMAND", "APPLICATION", "STUDENT", "REFUND", "CREDIT_NOTE", "ADJUSTMENT"];
 export type SequenceKind = (typeof SEQUENCE_KINDS)[number];
 /** Human-facing labels, used by the web app so a value is never shown raw. */
 export declare const ENUM_LABELS: Record<string, string>;

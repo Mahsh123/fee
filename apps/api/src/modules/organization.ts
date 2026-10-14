@@ -38,6 +38,14 @@ export class OrganizationService {
       resolveTenantModuleAccess(this.prisma.db, tenantId),
     ]);
     const branchIds = branchRows.map(({ id }) => id);
+    const enabledModules = moduleAccess?.enabledModules ?? [];
+    const needsRegionalDashboardData = enabledModules.includes('FEES') || enabledModules.includes('ATTENDANCE') || enabledModules.includes('ADMISSIONS');
+    const settings = needsRegionalDashboardData
+      ? await this.prisma.db.tenantSettings.findUnique({ where: { tenantId }, select: { timezone: true } })
+      : null;
+    const timezone = settings?.timezone ?? 'Asia/Kolkata';
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const monthStart = `${today.slice(0, 7)}-01`;
     const [totalUsers, activeUsers, activeBranches, activeUnits, assignedUsers, openAssignments] = await Promise.all([
       this.prisma.db.user.count({ where: { tenantId, deletedAt: null, isPlatformAdmin: false, ...(isOrganizationAdmin ? {} : { id: actor.userId }) } }),
       this.prisma.db.user.count({ where: { tenantId, deletedAt: null, isPlatformAdmin: false, status: 'ACTIVE', ...(isOrganizationAdmin ? {} : { id: actor.userId }) } }),
@@ -48,6 +56,21 @@ export class OrganizationService {
         : this.prisma.db.userBranchMembership.findMany({ where: { tenantId, branchId: { in: branchIds } }, select: { userId: true } }).then((links) => new Set(links.map(({ userId }) => userId)).size),
       this.prisma.db.userAssignment.count({ where: { tenantId, status: { in: ['ASSIGNED', 'STARTED', 'IN_PROGRESS', 'OVERDUE'] }, ...(isOrganizationAdmin ? {} : { userId: actor.userId }) } }),
     ]);
+    const [finance, attendanceToday, activeStudents] = await Promise.all([
+      enabledModules.includes('FEES')
+        ? this.prisma.financeReportData({ tenantId, from: monthStart, to: today, today, timezone, ...(isOrganizationAdmin ? {} : { branchIds }) })
+        : Promise.resolve(null),
+      enabledModules.includes('ATTENDANCE')
+        ? this.prisma.db.attendanceRecord.groupBy({
+            by: ['status'],
+            where: { tenantId, session: { attendanceDate: new Date(`${today}T00:00:00.000Z`), ...(isOrganizationAdmin ? {} : { branchId: { in: branchIds } }) } },
+            _count: { _all: true },
+          })
+        : Promise.resolve([]),
+      enabledModules.includes('ADMISSIONS')
+        ? this.prisma.db.student.count({ where: { tenantId, status: 'ACTIVE', deletedAt: null, ...(isOrganizationAdmin ? {} : { branchId: { in: branchIds } }) } })
+        : Promise.resolve(null),
+    ]);
     const onboarding = isOrganizationAdmin ? [
       { key: 'organization', label: 'Review organization settings', complete: Boolean(tenant.name && tenant.organizationType) },
       { key: 'branch', label: 'Create or confirm a branch', complete: activeBranches > 0 },
@@ -57,8 +80,12 @@ export class OrganizationService {
     return {
       organization: { name: tenant.name, type: tenant.organizationType, status: tenant.status, subscriptionStatus: tenant.subscriptionStatus },
       subscription: subscription ? { plan: subscription.plan.name, planKey: subscription.plan.key, status: subscription.status, billingInterval: subscription.billingInterval, trialEndsAt: subscription.trialEndsAt, periodEnd: subscription.currentPeriodEnd } : { plan: null, planKey: null, status: tenant.subscriptionStatus, billingInterval: null, trialEndsAt: tenant.trialEndsAt, periodEnd: tenant.subscriptionRenewalAt },
-      modules: moduleAccess?.enabledModules ?? [],
-      counts: { totalUsers, activeUsers, branchCount: activeBranches, organizationUnitCount: activeUnits, visibleMembers: assignedUsers, openAssignments },
+      modules: enabledModules,
+      counts: { totalUsers, activeUsers, branchCount: activeBranches, organizationUnitCount: activeUnits, visibleMembers: assignedUsers, openAssignments, ...(activeStudents === null ? {} : { activeStudents }) },
+      financialTotals: finance ? { month: { from: monthStart, to: today, timezone }, collections: finance.collectionSummary, outstanding: finance.outstanding } : null,
+      attendanceToday: enabledModules.includes('ATTENDANCE')
+        ? { date: today, timezone, byStatus: attendanceToday.map(({ status, _count }) => ({ status, count: _count._all })), totalMarked: attendanceToday.reduce((sum, row) => sum + row._count._all, 0) }
+        : null,
       onboarding,
     };
   }

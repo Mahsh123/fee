@@ -11,6 +11,7 @@ export const createTenantUserSchema = z.object({
   roleIds: z.array(uuid).min(1).max(100),
   studentId: uuid.nullable().optional(),
   guardianId: uuid.nullable().optional(),
+  tenantPersonId: uuid.nullable().optional(),
 });
 export const inviteTenantUserSchema = z.object({
   email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
@@ -23,6 +24,8 @@ export const inviteTenantUserSchema = z.object({
   organizationUnitIds: z.array(uuid).max(100).refine((ids) => new Set(ids).size === ids.length, 'A group can be assigned only once.').optional(),
   studentId: uuid.nullable().optional(),
   guardianId: uuid.nullable().optional(),
+  tenantPersonId: uuid.nullable().optional(),
+  personNumber: z.string().trim().min(1).max(80).optional(),
 }).refine((value) => !value.primaryBranchId || (value.branchIds ?? []).includes(value.primaryBranchId), 'The primary branch must be included in the assigned branches.');
 export const bulkInviteTenantUsersSchema = z.object({
   users: z.array(inviteTenantUserSchema).min(1).max(100),
@@ -32,6 +35,7 @@ export const bulkInviteTenantUsersSchema = z.object({
     const email = user.email.toLowerCase();
     if (seen.has(email)) context.addIssue({ code: 'custom', path: ['users', index, 'email'], message: 'This email address appears more than once in the import.' });
     seen.add(email);
+    if (user.personNumber && user.tenantPersonId) context.addIssue({ code: 'custom', path: ['users', index, 'tenantPersonId'], message: 'Link a person by profile number or profile ID, not both.' });
   });
 });
 export const acceptInvitationSchema = z.object({

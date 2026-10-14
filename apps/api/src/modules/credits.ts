@@ -34,7 +34,7 @@ type CreditDemandItem = {
   status: DemandItemStatus;
   sequence: number;
   updatedAt: Date;
-  demand: { id: string; demandNumber: string; studentId: string; status: DemandStatus; dueDate: Date; issueDate: Date; currency: string; netAmount: Prisma.Decimal; adjustmentAmount: Prisma.Decimal; paidAmount: Prisma.Decimal; waivedAmount: Prisma.Decimal; creditedAmount: Prisma.Decimal; updatedAt: Date };
+  demand: { id: string; demandNumber: string; studentId: string | null; personId: string | null; status: DemandStatus; dueDate: Date; issueDate: Date; currency: string; netAmount: Prisma.Decimal; adjustmentAmount: Prisma.Decimal; paidAmount: Prisma.Decimal; waivedAmount: Prisma.Decimal; creditedAmount: Prisma.Decimal; updatedAt: Date };
   installmentShares: CreditScheduleShare[];
   studentResponsibilityShares: Array<{ responsibilityId: string | null; balance: Money }>;
   responsibilityBalance: Money;
@@ -57,8 +57,10 @@ export class CreditsService {
     this.assertTenant(tenantId);
     const query = parseListQuery(raw, { allowedSortFields: ['createdAt', 'originalAmount', 'availableAmount', 'status'] });
     const studentId = typeof raw.studentId === 'string' && raw.studentId.trim() ? raw.studentId.trim() : undefined;
-    if (studentId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(studentId)) throw AppError.validation('The student ID must be a valid identifier.');
-    const where: Prisma.CreditWhereInput = { tenantId, ...(studentId ? { studentId } : {}), ...(query.status?.length ? { status: { in: query.status as CreditStatus[] } } : {}) };
+    const personId = typeof raw.personId === 'string' && raw.personId.trim() ? raw.personId.trim() : undefined;
+    if (studentId && personId) throw AppError.validation('Filter credits by one person identity at a time.');
+    if ((studentId ?? personId) && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(studentId ?? personId!)) throw AppError.validation('The person ID must be a valid identifier.');
+    const where: Prisma.CreditWhereInput = { tenantId, ...(studentId ? { studentId } : {}), ...(personId ? { personId } : {}), ...(query.status?.length ? { status: { in: query.status as CreditStatus[] } } : {}) };
     const [credits, total] = await Promise.all([
       this.prisma.db.credit.findMany({ where, orderBy: toPrismaOrderBy(query.sort) as Prisma.CreditOrderByWithRelationInput[], skip: query.skip, take: query.take }),
       this.prisma.db.credit.count({ where }),
@@ -66,7 +68,10 @@ export class CreditsService {
     const studentIds = [...new Set(credits.flatMap(({ studentId }) => studentId ? [studentId] : []))];
     const students = studentIds.length ? await this.prisma.db.student.findMany({ where: { tenantId, id: { in: studentIds } }, select: { id: true, admissionNumber: true, firstName: true, middleName: true, lastName: true } }) : [];
     const studentById = new Map(students.map((student) => [student.id, student]));
-    const items = credits.map((credit) => ({ ...credit, student: credit.studentId ? studentById.get(credit.studentId) ?? null : null }));
+    const personIds = [...new Set(credits.flatMap(({ personId }) => personId ? [personId] : []))];
+    const people = personIds.length ? await this.prisma.db.tenantPerson.findMany({ where: { tenantId, id: { in: personIds } }, select: { id: true, personNumber: true, typeLabel: true, firstName: true, middleName: true, lastName: true } }) : [];
+    const personById = new Map(people.map((person) => [person.id, person]));
+    const items = credits.map((credit) => ({ ...credit, student: credit.studentId ? studentById.get(credit.studentId) ?? null : null, person: credit.personId ? personById.get(credit.personId) ?? null : null }));
     return paginate(items, total, query);
   }
 
@@ -99,17 +104,24 @@ export class CreditsService {
       if (!reservation.isNew) return reservation.cachedResponse?.body;
       const settings = await tx.tenantSettings.findUnique({ where: { tenantId } });
       const currency = requireTenantCurrency(settings);
-      const student = await tx.student.findFirst({ where: { tenantId, id: input.studentId }, select: { id: true, admissionNumber: true } });
-      if (!student) throw AppError.notFound('Student');
+      const isPerson = Boolean(input.personId);
+      const subjectId = input.personId ?? input.studentId!;
+      const subject = isPerson
+        ? await tx.tenantPerson.findFirst({ where: { tenantId, id: subjectId, deletedAt: null, status: 'ACTIVE' }, select: { id: true, personNumber: true, typeLabel: true } })
+        : await tx.student.findFirst({ where: { tenantId, id: subjectId }, select: { id: true, admissionNumber: true } });
+      if (!subject) throw AppError.notFound(isPerson ? 'Organisation person' : 'Student');
+      const subjectFilter = isPerson ? { personId: subject.id } : { studentId: subject.id };
+      const subjectNumber = isPerson ? (subject as { personNumber: string }).personNumber : (subject as { admissionNumber: string }).admissionNumber;
+      const subjectLabel = isPerson ? (subject as { typeLabel: string }).typeLabel.toLowerCase() : 'student';
 
-      let credits = await tx.credit.findMany({ where: { tenantId, studentId: student.id, currency, status: { in: ['AVAILABLE', 'PARTIALLY_ALLOCATED'] }, availableAmount: { gt: 0 }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }], ...(input.creditIds ? { id: { in: input.creditIds } } : {}) }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
-      if (input.creditIds && credits.length !== input.creditIds.length) throw AppError.validation('Every selected credit must belong to this student, use the tenant currency, and still have available balance.');
-      if (!credits.length) throw AppError.conflict('NO_AVAILABLE_CREDIT', 'This student has no available credit in the tenant currency.');
+      let credits = await tx.credit.findMany({ where: { tenantId, ...subjectFilter, currency, status: { in: ['AVAILABLE', 'PARTIALLY_ALLOCATED'] }, availableAmount: { gt: 0 }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }], ...(input.creditIds ? { id: { in: input.creditIds } } : {}) }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
+      if (input.creditIds && credits.length !== input.creditIds.length) throw AppError.validation(`Every selected credit must belong to this ${subjectLabel}, use the tenant currency, and still have available balance.`);
+      if (!credits.length) throw AppError.conflict('NO_AVAILABLE_CREDIT', `This ${subjectLabel} has no available credit in the tenant currency.`);
 
-      let openItems = await this.openItems(tx, tenantId, student.id);
+      let openItems = await this.openItems(tx, tenantId, subject.id, isPerson);
       if (input.demandItemIds) {
         const byId = new Map(openItems.map((item) => [item.id, item]));
-        if (input.demandItemIds.some((id) => !byId.has(id))) throw AppError.validation('Every selected demand item must belong to this student and have an outstanding balance.');
+        if (input.demandItemIds.some((id) => !byId.has(id))) throw AppError.validation(`Every selected demand item must belong to this ${subjectLabel} and have an outstanding balance.`);
         const selected = new Set(input.demandItemIds);
         openItems = openItems.filter((item) => selected.has(item.id));
       }
@@ -117,7 +129,7 @@ export class CreditsService {
       const due = openItems.reduce((sum, item) => sum.add(item.responsibilityBalance), Money.zero(currency));
       const maximum = available.min(due);
       const requested = input.amount ? Money.fromString(input.amount, currency) : maximum;
-      if (!maximum.isPositive || !requested.isPositive || requested.greaterThan(maximum)) throw AppError.validation(`Credit application cannot exceed the lower of available credit (${available.format()}) and the student's unreserved responsibility (${due.format()}).`);
+      if (!maximum.isPositive || !requested.isPositive || requested.greaterThan(maximum)) throw AppError.validation(`Credit application cannot exceed the lower of available credit (${available.format()}) and the ${subjectLabel}'s unreserved responsibility (${due.format()}).`);
 
       const itemPlan = this.planDemandItems(openItems, requested);
       const allocations = this.assignCredits(credits, itemPlan, requested, currency);
@@ -187,7 +199,7 @@ export class CreditsService {
         const allocatedAmount = Money.fromString(credit.allocatedAmount.toString(), currency).add(amount);
         const originalAmount = Money.fromString(credit.originalAmount.toString(), currency);
         const refundedAmount = Money.fromString(credit.refundedAmount.toString(), currency);
-        if (availableAmount.isNegative || !availableAmount.add(allocatedAmount).add(refundedAmount).equals(originalAmount)) throw AppError.conflict('CREDIT_BALANCE_INVARIANT', 'Credit application would make the student credit balance inconsistent.');
+        if (availableAmount.isNegative || !availableAmount.add(allocatedAmount).add(refundedAmount).equals(originalAmount)) throw AppError.conflict('CREDIT_BALANCE_INVARIANT', 'Credit application would make the person credit balance inconsistent.');
         const status = availableAmount.isPositive ? 'PARTIALLY_ALLOCATED' : 'ALLOCATED';
         const changed = await tx.credit.updateMany({ where: { tenantId, id: credit.id, availableAmount: credit.availableAmount, allocatedAmount: credit.allocatedAmount, refundedAmount: credit.refundedAmount }, data: { availableAmount: availableAmount.toString(), allocatedAmount: allocatedAmount.toString(), status } });
         if (changed.count !== 1) throw AppError.conflict(ERROR_CODES.CONFLICT, 'A credit changed while the application was being posted.');
@@ -203,21 +215,23 @@ export class CreditsService {
       }
 
       const appliedAmount = allocations.reduce((sum, allocation) => sum.add(allocation.amount), Money.zero(currency));
+      const receivableAccount: SystemLedgerAccountKey = isPerson ? 'TENANT_PERSON_RECEIVABLE' : 'STUDENT_RECEIVABLE';
+      const creditAccount: SystemLedgerAccountKey = isPerson ? 'TENANT_PERSON_CREDIT' : 'STUDENT_CREDIT';
       const ledgerLines: Array<{ accountKey: SystemLedgerAccountKey; side: 'DEBIT' | 'CREDIT'; amount: string; narration: string }> = [
-        { accountKey: 'STUDENT_CREDIT', side: 'DEBIT', amount: appliedAmount.toString(), narration: `Student credit applied · ${student.admissionNumber}` },
-        { accountKey: 'STUDENT_RECEIVABLE', side: 'CREDIT', amount: appliedAmount.toString(), narration: `Applied to open fee demands · ${student.admissionNumber}` },
+        { accountKey: creditAccount, side: 'DEBIT', amount: appliedAmount.toString(), narration: `Person credit applied · ${subjectNumber}` },
+        { accountKey: receivableAccount, side: 'CREDIT', amount: appliedAmount.toString(), narration: `Applied to open fee demands · ${subjectNumber}` },
       ];
-      const posted = await this.ledger.post(tx, { tenantId, currency, eventType: 'CREDIT_APPLIED', entryDate: new Date().toISOString().slice(0, 10), lines: ledgerLines, studentId: student.id, narration: `Credit application · ${student.admissionNumber}`, createdBy: actorId ?? null });
-      const response = { studentId: student.id, amount: appliedAmount.toString(), currency, allocations: auditAllocations, ledgerGroupId: posted.transactionGroupId };
-      await this.idempotency.complete(tx, { id: reservation.id, responseCode: 201, responseBody: response, resourceId: student.id, resourceType: 'CreditApplication' });
-      await this.audit.record(tx, { tenantId, actorId, action: 'CREDIT_APPLIED', entityType: 'CreditApplication', entityId: student.id, after: { amount: appliedAmount.toString(), currency, allocations: auditAllocations, ledgerGroupId: posted.transactionGroupId } });
-      await this.outbox.publish(tx, { tenantId, eventType: 'CREDIT_APPLIED', aggregateType: 'Student', aggregateId: student.id, payload: { studentId: student.id, amount: appliedAmount.toString(), currency, allocations: auditAllocations }, actorId, requestId: this.tenantContext.requestId });
+      const posted = await this.ledger.post(tx, { tenantId, currency, eventType: 'CREDIT_APPLIED', entryDate: new Date().toISOString().slice(0, 10), lines: ledgerLines, studentId: isPerson ? null : subject.id, personId: isPerson ? subject.id : null, narration: `Credit application · ${subjectNumber}`, createdBy: actorId ?? null });
+      const response = { studentId: isPerson ? null : subject.id, personId: isPerson ? subject.id : null, amount: appliedAmount.toString(), currency, allocations: auditAllocations, ledgerGroupId: posted.transactionGroupId };
+      await this.idempotency.complete(tx, { id: reservation.id, responseCode: 201, responseBody: response, resourceId: subject.id, resourceType: 'CreditApplication' });
+      await this.audit.record(tx, { tenantId, actorId, action: 'CREDIT_APPLIED', entityType: 'CreditApplication', entityId: subject.id, after: { amount: appliedAmount.toString(), currency, personId: isPerson ? subject.id : null, studentId: isPerson ? null : subject.id, allocations: auditAllocations, ledgerGroupId: posted.transactionGroupId } });
+      await this.outbox.publish(tx, { tenantId, eventType: 'CREDIT_APPLIED', aggregateType: isPerson ? 'TenantPerson' : 'Student', aggregateId: subject.id, payload: { studentId: isPerson ? null : subject.id, personId: isPerson ? subject.id : null, amount: appliedAmount.toString(), currency, allocations: auditAllocations }, actorId, requestId: this.tenantContext.requestId });
       return response;
     });
   }
 
-  private async openItems(tx: TransactionClient, tenantId: string, studentId: string): Promise<CreditDemandItem[]> {
-    const demands = await tx.feeDemand.findMany({ where: { tenantId, studentId, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] } }, orderBy: [{ dueDate: 'asc' }, { issueDate: 'asc' }] });
+  private async openItems(tx: TransactionClient, tenantId: string, subjectId: string, isPerson: boolean): Promise<CreditDemandItem[]> {
+    const demands = await tx.feeDemand.findMany({ where: { tenantId, ...(isPerson ? { personId: subjectId, studentId: null } : { studentId: subjectId }), status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] } }, orderBy: [{ dueDate: 'asc' }, { issueDate: 'asc' }] });
     if (!demands.length) return [];
     const items = await tx.feeDemandItem.findMany({ where: { tenantId, demandId: { in: demands.map((demand) => demand.id) }, status: { in: ['UNPAID', 'PARTIALLY_PAID'] } }, orderBy: [{ sequence: 'asc' }] });
     if (!items.length) return [];
@@ -252,7 +266,7 @@ export class CreditsService {
       creditAllocations: (creditAllocationsByResponsibility.get(row.id) ?? []).map((allocation) => ({ amount: allocation.amount, refundReversals: creditReversalById.get(allocation.id) ? [{ amount: creditReversalById.get(allocation.id)! }] : [] })),
     }));
     const activeOrders = await tx.paymentOrder.findMany({
-      where: { tenantId, studentId, status: { in: ['CREATED', 'INITIATED', 'PENDING'] }, expiresAt: { gt: new Date() } },
+      where: { tenantId, ...(isPerson ? { personId: subjectId } : { studentId: subjectId }), status: { in: ['CREATED', 'INITIATED', 'PENDING'] }, expiresAt: { gt: new Date() } },
       select: { responsibilityShares: true },
     });
     const reservations = activeOrders.flatMap((order) => parseResponsibilityReservations(order.responsibilityShares));
@@ -278,24 +292,24 @@ export class CreditsService {
           .subtract(allocationUsed(row.allocations, currency))
           .subtract(allocationUsed(row.creditAllocations, currency)),
       })).map((entry) => ({ ...entry, actualOutstanding: entry.actualOutstanding.isPositive ? entry.actualOutstanding : Money.zero(currency) }));
-      const studentRows = balances.filter(({ row }) => row.payerType === 'STUDENT').sort((left, right) => left.row.id.localeCompare(right.row.id));
+      const payerRows = balances.filter(({ row }) => row.payerType === (isPerson ? 'MEMBER' : 'STUDENT')).sort((left, right) => left.row.id.localeCompare(right.row.id));
       const due = this.itemBalance({ ...item, demand });
-      const nonStudentBalance = balances.filter(({ row }) => row.payerType !== 'STUDENT').reduce((sum, entry) => sum.add(entry.actualOutstanding), Money.zero(currency));
-      const studentAssignedBalance = studentRows.reduce((sum, entry) => sum.add(entry.actualOutstanding), Money.zero(currency));
-      let studentCapacity = due.subtract(nonStudentBalance).max(Money.zero(currency));
+      const otherPayerBalance = balances.filter(({ row }) => row.payerType !== (isPerson ? 'MEMBER' : 'STUDENT')).reduce((sum, entry) => sum.add(entry.actualOutstanding), Money.zero(currency));
+      const assignedBalance = payerRows.reduce((sum, entry) => sum.add(entry.actualOutstanding), Money.zero(currency));
+      let payerCapacity = due.subtract(otherPayerBalance).max(Money.zero(currency));
       const studentResponsibilityShares: CreditDemandItem['studentResponsibilityShares'] = [];
-      for (const entry of studentRows) {
-        if (!studentCapacity.isPositive) break;
+      for (const entry of payerRows) {
+        if (!payerCapacity.isPositive) break;
         const reserved = reservations.filter((reservation) => reservation.demandItemId === item.id && reservation.responsibilityId === entry.row.id)
           .reduce((sum, reservation) => sum.add(Money.fromString(reservation.amount, currency)), Money.zero(currency));
-        const available = entry.actualOutstanding.subtract(reserved).max(Money.zero(currency)).min(studentCapacity);
+        const available = entry.actualOutstanding.subtract(reserved).max(Money.zero(currency)).min(payerCapacity);
         if (available.isPositive) studentResponsibilityShares.push({ responsibilityId: entry.row.id, balance: available });
-        studentCapacity = studentCapacity.subtract(available);
+        payerCapacity = payerCapacity.subtract(available);
       }
-      const unassigned = due.subtract(nonStudentBalance).subtract(studentAssignedBalance);
+      const unassigned = due.subtract(otherPayerBalance).subtract(assignedBalance);
       const nullReserved = reservations.filter((reservation) => reservation.demandItemId === item.id && reservation.responsibilityId === null)
         .reduce((sum, reservation) => sum.add(Money.fromString(reservation.amount, currency)), Money.zero(currency));
-      const unassignedAvailable = (unassigned.isPositive ? unassigned : Money.zero(currency)).subtract(nullReserved).max(Money.zero(currency)).min(studentCapacity);
+      const unassignedAvailable = (unassigned.isPositive ? unassigned : Money.zero(currency)).subtract(nullReserved).max(Money.zero(currency)).min(payerCapacity);
       if (unassignedAvailable.isPositive) studentResponsibilityShares.push({ responsibilityId: null, balance: unassignedAvailable });
       const studentBalance = studentResponsibilityShares.reduce((sum, share) => sum.add(share.balance), Money.zero(currency));
       return { ...item, demand, installmentShares: (sharesByItem.get(item.id) ?? []).sort((a, b) => a.installment.dueDate.getTime() - b.installment.dueDate.getTime() || a.installment.sequence - b.installment.sequence), studentResponsibilityShares, responsibilityBalance: studentBalance } as CreditDemandItem;

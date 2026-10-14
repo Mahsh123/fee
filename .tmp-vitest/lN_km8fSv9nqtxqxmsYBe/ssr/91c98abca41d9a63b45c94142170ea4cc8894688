@@ -1,0 +1,44 @@
+__vite_ssr_exportName__("assertTenantUserSeatAvailable", () => { try { return assertTenantUserSeatAvailable } catch {} });
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/src/common/errors.ts", {"importedNames":["AppError"]});
+
+/** Shared seat check for administrator invites and public tenant registration. */
+async function assertTenantUserSeatAvailable(tx, tenantId) {
+	const subscription = await tx.tenantSubscription.findFirst({
+		where: {
+			tenantId,
+			isCurrent: true
+		},
+		select: { planId: true }
+	});
+	if (!subscription) return;
+	const [current, planLimit, override] = await Promise.all([
+		tx.user.count({ where: {
+			tenantId,
+			deletedAt: null,
+			status: { in: ["ACTIVE", "INVITED"] },
+			isPlatformAdmin: false
+		} }),
+		tx.planEntitlement.findFirst({
+			where: {
+				planId: subscription.planId,
+				entitlementKey: "MAX_USERS"
+			},
+			select: { limitValue: true }
+		}),
+		tx.tenantEntitlementOverride.findFirst({
+			where: {
+				tenantId,
+				entitlementKey: "MAX_USERS"
+			},
+			select: { limitValue: true }
+		})
+	]);
+	const limit = override ? override.limitValue : planLimit?.limitValue;
+	if (limit !== null && limit !== undefined && current >= limit) {
+		throw __vite_ssr_import_0__.AppError.conflict("TENANT_LIMIT_REACHED", "The organization has reached its user seat limit. Increase its limit or change its subscription plan.");
+	}
+}
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTtBQUNBOzs7QUFHTyxlQUFlLDhCQUE4QixJQUF1QixVQUFpQztDQUMxRyxNQUFNLGVBQWUsTUFBTSxHQUFHLG1CQUFtQixVQUFVO0VBQUUsT0FBTztHQUFFO0dBQVUsV0FBVztFQUFLO0VBQUcsUUFBUSxFQUFFLFFBQVEsS0FBSztDQUFFLENBQUM7Q0FDN0gsSUFBSSxDQUFDLGNBQWM7Q0FDbkIsTUFBTSxDQUFDLFNBQVMsV0FBVyxZQUFZLE1BQU0sUUFBUSxJQUFJO0VBQ3ZELEdBQUcsS0FBSyxNQUFNLEVBQUUsT0FBTztHQUFFO0dBQVUsV0FBVztHQUFNLFFBQVEsRUFBRSxJQUFJLENBQUMsVUFBVSxTQUFTLEVBQUU7R0FBRyxpQkFBaUI7RUFBTSxFQUFFLENBQUM7RUFDckgsR0FBRyxnQkFBZ0IsVUFBVTtHQUFFLE9BQU87SUFBRSxRQUFRLGFBQWE7SUFBUSxnQkFBZ0I7R0FBWTtHQUFHLFFBQVEsRUFBRSxZQUFZLEtBQUs7RUFBRSxDQUFDO0VBQ2xJLEdBQUcsMEJBQTBCLFVBQVU7R0FBRSxPQUFPO0lBQUU7SUFBVSxnQkFBZ0I7R0FBWTtHQUFHLFFBQVEsRUFBRSxZQUFZLEtBQUs7RUFBRSxDQUFDO0NBQzNILENBQUM7Q0FDRCxNQUFNLFFBQVEsV0FBVyxTQUFTLGFBQWEsV0FBVztDQUMxRCxJQUFJLFVBQVUsUUFBUSxVQUFVLGFBQWEsV0FBVyxPQUFPO0VBQzdELE1BQU0sK0JBQVMsU0FBUyx3QkFBd0IsdUdBQXVHO0NBQ3pKO0FBQ0YiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbInVzZXItbGltaXRzLnRzIl0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IHR5cGUgVHJhbnNhY3Rpb25DbGllbnQgfSBmcm9tICdAZmVlL2RhdGFiYXNlJztcbmltcG9ydCB7IEFwcEVycm9yIH0gZnJvbSAnLi9lcnJvcnMnO1xuXG4vKiogU2hhcmVkIHNlYXQgY2hlY2sgZm9yIGFkbWluaXN0cmF0b3IgaW52aXRlcyBhbmQgcHVibGljIHRlbmFudCByZWdpc3RyYXRpb24uICovXG5leHBvcnQgYXN5bmMgZnVuY3Rpb24gYXNzZXJ0VGVuYW50VXNlclNlYXRBdmFpbGFibGUodHg6IFRyYW5zYWN0aW9uQ2xpZW50LCB0ZW5hbnRJZDogc3RyaW5nKTogUHJvbWlzZTx2b2lkPiB7XG4gIGNvbnN0IHN1YnNjcmlwdGlvbiA9IGF3YWl0IHR4LnRlbmFudFN1YnNjcmlwdGlvbi5maW5kRmlyc3QoeyB3aGVyZTogeyB0ZW5hbnRJZCwgaXNDdXJyZW50OiB0cnVlIH0sIHNlbGVjdDogeyBwbGFuSWQ6IHRydWUgfSB9KTtcbiAgaWYgKCFzdWJzY3JpcHRpb24pIHJldHVybjtcbiAgY29uc3QgW2N1cnJlbnQsIHBsYW5MaW1pdCwgb3ZlcnJpZGVdID0gYXdhaXQgUHJvbWlzZS5hbGwoW1xuICAgIHR4LnVzZXIuY291bnQoeyB3aGVyZTogeyB0ZW5hbnRJZCwgZGVsZXRlZEF0OiBudWxsLCBzdGF0dXM6IHsgaW46IFsnQUNUSVZFJywgJ0lOVklURUQnXSB9LCBpc1BsYXRmb3JtQWRtaW46IGZhbHNlIH0gfSksXG4gICAgdHgucGxhbkVudGl0bGVtZW50LmZpbmRGaXJzdCh7IHdoZXJlOiB7IHBsYW5JZDogc3Vic2NyaXB0aW9uLnBsYW5JZCwgZW50aXRsZW1lbnRLZXk6ICdNQVhfVVNFUlMnIH0sIHNlbGVjdDogeyBsaW1pdFZhbHVlOiB0cnVlIH0gfSksXG4gICAgdHgudGVuYW50RW50aXRsZW1lbnRPdmVycmlkZS5maW5kRmlyc3QoeyB3aGVyZTogeyB0ZW5hbnRJZCwgZW50aXRsZW1lbnRLZXk6ICdNQVhfVVNFUlMnIH0sIHNlbGVjdDogeyBsaW1pdFZhbHVlOiB0cnVlIH0gfSksXG4gIF0pO1xuICBjb25zdCBsaW1pdCA9IG92ZXJyaWRlID8gb3ZlcnJpZGUubGltaXRWYWx1ZSA6IHBsYW5MaW1pdD8ubGltaXRWYWx1ZTtcbiAgaWYgKGxpbWl0ICE9PSBudWxsICYmIGxpbWl0ICE9PSB1bmRlZmluZWQgJiYgY3VycmVudCA+PSBsaW1pdCkge1xuICAgIHRocm93IEFwcEVycm9yLmNvbmZsaWN0KCdURU5BTlRfTElNSVRfUkVBQ0hFRCcsICdUaGUgb3JnYW5pemF0aW9uIGhhcyByZWFjaGVkIGl0cyB1c2VyIHNlYXQgbGltaXQuIEluY3JlYXNlIGl0cyBsaW1pdCBvciBjaGFuZ2UgaXRzIHN1YnNjcmlwdGlvbiBwbGFuLicpO1xuICB9XG59XG4iXSwiZmlsZSI6Ii9zcmMvY29tbW9uL3VzZXItbGltaXRzLnRzIn0=
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZSwiZGVwcyI6IjQiLCJkeW5hbWljRGVwcyI6IjUiLCJzdGF0aWNNb2NrcyI6bnVsbH0sIkQ6L2ZlZS9hcHBzL2FwaS9zcmMvY29tbW9uL3VzZXItbGltaXRzLnRzIiwiL3NyYy9jb21tb24vdXNlci1saW1pdHMudHMiLFtdLFsiNiJdLFtdLCIvc3JjL2NvbW1vbi9lcnJvcnMudHMiXQ==

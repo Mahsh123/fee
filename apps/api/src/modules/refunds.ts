@@ -44,7 +44,7 @@ export class RefundsService {
       const payment = await tx.payment.findFirst({ where: { tenantId, id: input.paymentId } });
       if (!payment) throw AppError.notFound('Payment');
       if (!['SUCCESS', 'PARTIALLY_REFUNDED'].includes(payment.status)) throw AppError.conflict('PAYMENT_NOT_REFUNDABLE', 'Only successful payments can be refunded.');
-      if (input.toCreditBalance && !payment.studentId) throw AppError.validation('A refund can become student credit only when the payment belongs to a student.');
+      if (input.toCreditBalance && !payment.studentId && !payment.personId) throw AppError.validation('A refund can become credit only when the payment belongs to an organisation person or student.');
       const currency = payment.currency;
       const amount = Money.fromString(input.amount, currency);
       const refundable = Money.fromString(payment.amount.toString(), currency).subtract(Money.fromString(payment.refundedAmount.toString(), currency));
@@ -326,7 +326,10 @@ export class RefundsService {
       if (refund.kind === 'GATEWAY' && expectedStatus !== 'PROCESSING') throw AppError.conflict('REFUND_PROVIDER_CONFIRMATION_REQUIRED', 'A gateway refund can only be posted after confirmed provider success.');
       if (refund.kind === 'MANUAL' && expectedStatus !== 'APPROVED') throw AppError.conflict('REFUND_NOT_APPROVED', 'Only an approved manual refund can be processed.');
       const payment = await tx.payment.findFirst({ where: { tenantId, id: refund.paymentId } });
-      if (!payment || !payment.studentId) throw AppError.conflict('REFUND_PAYMENT_UNAVAILABLE', 'The source payment is unavailable for refund processing.');
+      if (!payment || (!payment.studentId && !payment.personId)) throw AppError.conflict('REFUND_PAYMENT_UNAVAILABLE', 'The source payment is unavailable for refund processing.');
+      const isGenericPerson = !payment.studentId && Boolean(payment.personId);
+      const receivableAccount: SystemLedgerAccountKey = isGenericPerson ? 'TENANT_PERSON_RECEIVABLE' : 'STUDENT_RECEIVABLE';
+      const creditAccount: SystemLedgerAccountKey = isGenericPerson ? 'TENANT_PERSON_CREDIT' : 'STUDENT_CREDIT';
       const amount = Money.fromString(refund.amount.toString(), refund.currency);
       const refundable = Money.fromString(payment.amount.toString(), payment.currency).subtract(Money.fromString(payment.refundedAmount.toString(), payment.currency));
       if (amount.greaterThan(refundable)) throw AppError.conflict('REFUND_AMOUNT_CHANGED', 'The source payment no longer has enough refundable balance.');
@@ -344,7 +347,7 @@ export class RefundsService {
           const newRefunded = Money.fromString(source.credit.refundedAmount.toString(), refund.currency).add(source.amount);
           await this.updateCredit(tx, tenantId, source.credit, newAvailable, Money.fromString(source.credit.allocatedAmount.toString(), refund.currency), newRefunded);
           if (refund.toCreditBalance) createdCreditAmount = createdCreditAmount.add(source.amount);
-          else ledgerLines.push({ accountKey: 'STUDENT_CREDIT', side: 'DEBIT', amount: source.amount.toString(), narration: `Refund from student credit · ${refund.refundNumber}` });
+          else ledgerLines.push({ accountKey: creditAccount, side: 'DEBIT', amount: source.amount.toString(), narration: `Refund from person credit · ${refund.refundNumber}` });
         } else {
           entry.demandId = source.demand?.id ?? null;
           entry.demandItemId = source.item?.id ?? null;
@@ -372,22 +375,22 @@ export class RefundsService {
             installmentChange.amount = installmentChange.amount.add(source.amount);
             installmentChanges.set(source.installmentItem.id, installmentChange);
           }
-          if (!refund.toCreditBalance) ledgerLines.push({ accountKey: 'STUDENT_RECEIVABLE', side: 'DEBIT', amount: source.amount.toString(), narration: `Reopen fee demand · ${refund.refundNumber}` });
-          else if (source.type === 'CREDIT_ALLOCATION' || source.type === 'PAYMENT_ALLOCATION') ledgerLines.push({ accountKey: 'STUDENT_RECEIVABLE', side: 'DEBIT', amount: source.amount.toString(), narration: `Move refunded amount to credit · ${refund.refundNumber}` });
+          if (!refund.toCreditBalance) ledgerLines.push({ accountKey: receivableAccount, side: 'DEBIT', amount: source.amount.toString(), narration: `Reopen fee demand · ${refund.refundNumber}` });
+          else if (source.type === 'CREDIT_ALLOCATION' || source.type === 'PAYMENT_ALLOCATION') ledgerLines.push({ accountKey: receivableAccount, side: 'DEBIT', amount: source.amount.toString(), narration: `Move refunded amount to credit · ${refund.refundNumber}` });
         }
         await tx.refundAllocation.create({ data: { id: randomUUID(), ...entry } });
       }
       if (refund.toCreditBalance) {
         if (createdCreditAmount.isPositive) {
           resultingCreditId = randomUUID();
-          await tx.credit.create({ data: { id: resultingCreditId!, tenantId, branchId: payment.branchId, studentId: payment.studentId, source: 'REFUND_TO_CREDIT', status: 'AVAILABLE', currency: refund.currency, originalAmount: createdCreditAmount.toString(), allocatedAmount: '0.0000', availableAmount: createdCreditAmount.toString(), refundedAmount: '0.0000', paymentId: payment.id, refundId: refund.id, reason: `Refund ${refund.refundNumber} returned to student credit`, createdBy: actorId ?? null } });
+          await tx.credit.create({ data: { id: resultingCreditId!, tenantId, branchId: payment.branchId, studentId: payment.studentId, personId: isGenericPerson ? payment.personId : null, source: 'REFUND_TO_CREDIT', status: 'AVAILABLE', currency: refund.currency, originalAmount: createdCreditAmount.toString(), allocatedAmount: '0.0000', availableAmount: createdCreditAmount.toString(), refundedAmount: '0.0000', paymentId: payment.id, refundId: refund.id, reason: `Refund ${refund.refundNumber} returned to person credit`, createdBy: actorId ?? null } });
         }
         const liabilityCredit = sources.filter((source) => source.type !== 'CREDIT').reduce((sum, source) => sum.add(source.amount), Money.zero(refund.currency));
-        if (liabilityCredit.isPositive) ledgerLines.push({ accountKey: 'STUDENT_CREDIT', side: 'CREDIT', amount: liabilityCredit.toString(), narration: `Refund credited to student · ${refund.refundNumber}` });
+        if (liabilityCredit.isPositive) ledgerLines.push({ accountKey: creditAccount, side: 'CREDIT', amount: liabilityCredit.toString(), narration: `Refund credited to person · ${refund.refundNumber}` });
         const availableCreditTransfer = sources.filter((source) => source.type === 'CREDIT').reduce((sum, source) => sum.add(source.amount), Money.zero(refund.currency));
         if (availableCreditTransfer.isPositive) {
-          ledgerLines.push({ accountKey: 'STUDENT_CREDIT', side: 'DEBIT', amount: availableCreditTransfer.toString(), narration: `Transfer payment credit · ${refund.refundNumber}` });
-          ledgerLines.push({ accountKey: 'STUDENT_CREDIT', side: 'CREDIT', amount: availableCreditTransfer.toString(), narration: `Transfer to refund credit · ${refund.refundNumber}` });
+          ledgerLines.push({ accountKey: creditAccount, side: 'DEBIT', amount: availableCreditTransfer.toString(), narration: `Transfer payment credit · ${refund.refundNumber}` });
+          ledgerLines.push({ accountKey: creditAccount, side: 'CREDIT', amount: availableCreditTransfer.toString(), narration: `Transfer to refund credit · ${refund.refundNumber}` });
         }
       } else {
         const cashAccount: SystemLedgerAccountKey = refund.kind === 'GATEWAY' ? 'GATEWAY_CLEARING' : refund.methodKind === 'CASH' ? 'CASH_IN_HAND' : 'BANK_ACCOUNT';
@@ -395,7 +398,7 @@ export class RefundsService {
       }
       await this.persistDemandChanges(tx, tenantId, demandChanges);
       await this.persistInstallmentChanges(tx, tenantId, refund.currency, installmentChanges);
-      const posted = await this.ledger.post(tx, { tenantId, currency: refund.currency, eventType: 'REFUND_COMPLETED', entryDate: new Date().toISOString().slice(0, 10), lines: ledgerLines, studentId: payment.studentId, paymentId: payment.id, refundId: refund.id, creditId: resultingCreditId, narration: `Refund ${refund.refundNumber}`, createdBy: actorId ?? null });
+      const posted = await this.ledger.post(tx, { tenantId, currency: refund.currency, eventType: 'REFUND_COMPLETED', entryDate: new Date().toISOString().slice(0, 10), lines: ledgerLines, studentId: payment.studentId, personId: isGenericPerson ? payment.personId : null, paymentId: payment.id, refundId: refund.id, creditId: resultingCreditId, narration: `Refund ${refund.refundNumber}`, createdBy: actorId ?? null });
       const nextRefunded = Money.fromString(payment.refundedAmount.toString(), payment.currency).add(amount);
       const allocationReduction = sources.filter((source) => source.type !== 'CREDIT').reduce((sum, source) => sum.add(source.amount), Money.zero(payment.currency));
       const unallocatedReduction = sources.filter((source) => source.type === 'CREDIT').reduce((sum, source) => sum.add(source.amount), Money.zero(payment.currency));

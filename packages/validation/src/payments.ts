@@ -31,7 +31,8 @@ export const approvalDecisionSchema = z.object({
 
 export const manualPaymentSchema = z.object({
   idempotencyKey: uuid,
-  studentId: uuid,
+  studentId: uuid.optional(),
+  personId: uuid.optional(),
   methodId: uuid,
   amount: money,
   currency: z.string().length(3).regex(/^[A-Z]{3}$/).optional(),
@@ -51,6 +52,7 @@ export const manualPaymentSchema = z.object({
   instrumentDate: date.optional(),
   remarks: optionalText(1000),
 }).superRefine((input, context) => {
+  if (Boolean(input.studentId) === Boolean(input.personId)) context.addIssue({ code: 'custom', path: ['personId'], message: 'Choose exactly one student or person profile.' });
   if (input.payerType === 'SPONSOR' && !input.payerSponsorId) {
     context.addIssue({ code: 'custom', path: ['payerSponsorId'], message: 'Choose the sponsor that made this payment.' });
   }
@@ -99,11 +101,13 @@ export const refundReconciliationSchema = z.object({
 
 export const applyCreditSchema = z.object({
   idempotencyKey: uuid,
-  studentId: uuid,
+  studentId: uuid.optional(),
+  personId: uuid.optional(),
   amount: money.optional(),
   creditIds: z.array(uuid).min(1).max(500).optional(),
   demandItemIds: z.array(uuid).min(1).max(500).optional(),
 }).superRefine((input, context) => {
+  if (Boolean(input.studentId) === Boolean(input.personId)) context.addIssue({ code: 'custom', path: ['personId'], message: 'Choose exactly one student or organisation person.' });
   if (input.creditIds && new Set(input.creditIds).size !== input.creditIds.length) context.addIssue({ code: 'custom', path: ['creditIds'], message: 'A credit may be selected only once.' });
   if (input.demandItemIds && new Set(input.demandItemIds).size !== input.demandItemIds.length) context.addIssue({ code: 'custom', path: ['demandItemIds'], message: 'A demand item may be selected only once.' });
 });

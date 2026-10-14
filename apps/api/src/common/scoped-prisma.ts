@@ -352,6 +352,7 @@ const GLOBAL_PERMISSION_WRITE_OPERATIONS = new Set([
   'update', 'updateMany', 'updateManyAndReturn', 'delete', 'deleteMany', 'upsert',
 ]);
 const PLATFORM_CATALOG_MODELS = new Set(['Plan', 'PlanModule', 'PlanEntitlement']);
+const PLATFORM_ONLY_GLOBAL_MODELS = new Set(['TenantProvisioningOperation']);
 const PLATFORM_CATALOG_READ_OPERATIONS = new Set([
   'findUnique', 'findUniqueOrThrow', 'findFirst', 'findFirstOrThrow', 'findMany', 'count', 'aggregate', 'groupBy',
 ]);
@@ -414,6 +415,12 @@ export function createTenantScopedClient(
           if (INTERNAL_ONLY_GLOBAL_MODELS.has(model)) {
             throw AppError.forbidden('This database metadata is only available through its reviewed operational interface.');
           }
+          if (PLATFORM_ONLY_GLOBAL_MODELS.has(model)) {
+            if (!tenantContext.peek()?.isPlatformAdmin) {
+              throw AppError.forbidden('Only a verified platform administrator can access provisioning operations.');
+            }
+            return query(args);
+          }
 
           const tenantId = tenantContext.requireTenantId();
           const input = args as Record<string, unknown>;
@@ -434,7 +441,7 @@ export function createTenantScopedClient(
           ) {
             scoped.data = scopeData(input.data, tenantId);
             if (applyBranchScope && hasBranchId) scoped.data = scopeBranchWrite(scoped.data, context?.branchIds ?? [], CREATE_OPERATIONS.has(operation));
-            await verifyForeignKeyReferences(client, transactionContext, model, scoped.data, tenantId, operation);
+            await verifyForeignKeyReferences(client, transactionContext, model, scoped.data, tenantId, operation, context?.isPlatformAdmin ? context.userId : undefined);
           }
           if (operation === 'upsert') {
             scoped.create = scopeData(input.create, tenantId);
@@ -446,8 +453,8 @@ export function createTenantScopedClient(
                 scoped.update = scopeBranchWrite(scoped.update, context?.branchIds ?? [], false);
               }
             }
-            await verifyForeignKeyReferences(client, transactionContext, model, scoped.create, tenantId, 'create');
-            await verifyForeignKeyReferences(client, transactionContext, model, scoped.update, tenantId, 'update');
+            await verifyForeignKeyReferences(client, transactionContext, model, scoped.create, tenantId, 'create', context?.isPlatformAdmin ? context.userId : undefined);
+            await verifyForeignKeyReferences(client, transactionContext, model, scoped.update, tenantId, 'update', context?.isPlatformAdmin ? context.userId : undefined);
           }
 
           return query(scoped as typeof args);
@@ -564,16 +571,25 @@ async function verifyForeignKeyReferences(
   data: unknown,
   tenantId: string,
   operation: string,
+  platformActorId?: string,
 ): Promise<void> {
   const targets = TENANT_FOREIGN_KEY_TARGETS[model];
   if (!targets) return;
   const rows = Array.isArray(data) ? data : [data];
   const idsByTarget = new Map<string, { target: TenantReferenceTarget; ids: Set<string> }>();
-  const references: Array<{ id: string; targetKeys: string[] }> = [];
+  const references: Array<{ id: string; field: string; targetKeys: string[] }> = [];
 
   for (const row of rows) {
     if (!isRecord(row)) continue;
     for (const [field, rule] of Object.entries(targets)) {
+      // During platform-managed tenant setup, the initial Tenant Admin records
+      // the authenticated platform operator as its creator. Accept only that
+      // exact actor ID; all other User.createdBy references remain tenant-bound.
+      const platformActorReference = (model === 'User' && field === 'createdBy')
+        || (model === 'AuditLog' && field === 'actorId');
+      if (platformActorReference && platformActorId
+        && referenceIds(row[field]).length > 0
+        && referenceIds(row[field]).every((id) => id === platformActorId)) continue;
       const resolved = resolveReferenceTargets(row, field, rule as TenantReferenceRule, operation);
       if (!resolved) continue;
       const { ids, targetSpecs } = resolved;
@@ -586,7 +602,7 @@ async function verifyForeignKeyReferences(
           idsByTarget.set(key, grouped);
           targetKeys.push(key);
         }
-        references.push({ id, targetKeys });
+        references.push({ id, field, targetKeys });
       }
     }
   }
@@ -618,6 +634,7 @@ async function verifyForeignKeyReferences(
       throw new AppError({
         code: 'TENANT_MISMATCH',
         message: 'A related record is unavailable in the authenticated institution.',
+        context: { model, field: reference.field, targets: reference.targetKeys },
       });
     }
   }
@@ -709,6 +726,7 @@ function unsafeRelationOperation(): AppError {
 }
 
 const PUBLIC_TENANT_FIELDS = new Set(['id', 'slug', 'name', 'status']);
+const TENANT_PUBLIC_CONTEXT_FIELDS = new Set(['organizationType']);
 
 /**
  * Tenant is an intentionally unscoped directory model only for narrow public
@@ -734,7 +752,14 @@ function assertTenantDirectoryAccess(
     where.id === context.tenantId &&
     Object.keys(select).length === 1 &&
     select.enabledModules === true;
-  if (Object.keys(select).some((field) => !PUBLIC_TENANT_FIELDS.has(field) || select[field] !== true) && !ownTenantModulesLookup) {
+  const ownTenantPublicContextLookup = !!context?.tenantId &&
+    operation === 'findUnique' &&
+    Object.keys(where).length === 1 &&
+    where.id === context.tenantId &&
+    Object.keys(select).length === 1 &&
+    TENANT_PUBLIC_CONTEXT_FIELDS.has(Object.keys(select)[0]!) &&
+    select[Object.keys(select)[0]!] === true;
+  if (Object.keys(select).some((field) => !PUBLIC_TENANT_FIELDS.has(field) || select[field] !== true) && !ownTenantModulesLookup && !ownTenantPublicContextLookup) {
     throw AppError.forbidden('Tenant directory access is not permitted.');
   }
 
@@ -757,7 +782,7 @@ function assertTenantDirectoryAccess(
     whereFields.length === 1 &&
     where.id === context.tenantId;
 
-  if (!publicSlugLookup && !publicVerifiedDomainLookup && !currentTenantLookup && !ownTenantModulesLookup) {
+  if (!publicSlugLookup && !publicVerifiedDomainLookup && !currentTenantLookup && !ownTenantModulesLookup && !ownTenantPublicContextLookup) {
     throw AppError.forbidden('Tenant directory access is not permitted.');
   }
 }

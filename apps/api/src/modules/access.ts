@@ -59,7 +59,7 @@ export class AccessService {
       this.prisma.db.user.findMany({
         where,
         select: {
-          id: true, email: true, phone: true, firstName: true, lastName: true, status: true, mustChangePassword: true, studentId: true, guardianId: true,
+          id: true, email: true, phone: true, firstName: true, lastName: true, status: true, mustChangePassword: true, studentId: true, guardianId: true, tenantPersonId: true,
           lastLoginAt: true, createdAt: true, invitationExpiresAt: true, emailVerifiedAt: true,
         },
         orderBy: toPrismaOrderBy(query.sort) as never,
@@ -115,7 +115,7 @@ export class AccessService {
         await this.assertSeatAvailable(tx, tenantId);
         const roles = await this.assertRoleIds(tx, tenantId, roleIds);
         this.assertMayAssignTenantAdministratorRole(roles.map((role) => role.key));
-        await this.assertPortalIdentity(tx, tenantId, roles.map((role) => role.key), input.studentId ?? null, input.guardianId ?? null);
+        await this.assertPortalIdentity(tx, tenantId, roles.map((role) => role.key), input.studentId ?? null, input.guardianId ?? null, input.tenantPersonId ?? null, undefined, input.email);
         const id = cryptoRandomId();
         const user = await tx.user.create({
           data: {
@@ -130,9 +130,10 @@ export class AccessService {
             mustChangePassword: true,
             studentId: input.studentId ?? null,
             guardianId: input.guardianId ?? null,
+            tenantPersonId: input.tenantPersonId ?? null,
             createdBy: actorId ?? null,
           },
-          select: { id: true, email: true, phone: true, firstName: true, lastName: true, status: true, mustChangePassword: true, studentId: true, guardianId: true, createdAt: true },
+          select: { id: true, email: true, phone: true, firstName: true, lastName: true, status: true, mustChangePassword: true, studentId: true, guardianId: true, tenantPersonId: true, createdAt: true },
         });
         await tx.userRole.createMany({ data: roles.map((role) => ({ tenantId, userId: id, roleId: role.id, grantedBy: actorId ?? null })) });
         const primaryBranch = await tx.branch.findFirst({
@@ -196,7 +197,12 @@ export class AccessService {
     const roleIds = [...new Set(input.roleIds)];
     const roles = await this.assertRoleIds(tx, tenantId, roleIds);
     this.assertMayAssignTenantAdministratorRole(roles.map((role) => role.key));
-    await this.assertPortalIdentity(tx, tenantId, roles.map((role) => role.key), input.studentId ?? null, input.guardianId ?? null);
+    const linkedPerson = input.personNumber
+      ? await tx.tenantPerson.findFirst({ where: { tenantId, personNumber: input.personNumber, deletedAt: null }, select: { id: true, branchId: true } })
+      : null;
+    if (input.personNumber && !linkedPerson) throw AppError.validation(`No active organisation person has profile number ${input.personNumber}.`);
+    let tenantPersonId = input.tenantPersonId ?? linkedPerson?.id ?? null;
+    await this.assertPortalIdentity(tx, tenantId, roles.map((role) => role.key), input.studentId ?? null, input.guardianId ?? null, tenantPersonId, undefined, input.email);
 
     const actor = this.tenantContext.require();
     let requestedBranchIds = input.branchIds ? [...input.branchIds] : [];
@@ -211,6 +217,7 @@ export class AccessService {
     }
     const branches = await tx.branch.findMany({ where: { tenantId, id: { in: requestedBranchIds }, status: 'ACTIVE' }, select: { id: true } });
     if (branches.length !== requestedBranchIds.length) throw AppError.validation('Choose active branches from this organization.');
+    if (tenantPersonId && linkedPerson?.branchId && !requestedBranchIds.includes(linkedPerson.branchId)) throw AppError.validation('The invited member must be assigned to their profile branch.');
     const primaryBranchId = input.primaryBranchId ?? requestedBranchIds[0]!;
     if (!requestedBranchIds.includes(primaryBranchId)) throw AppError.validation('The primary branch must be included in the assigned branches.');
     const organizationUnitIds = [...new Set(input.organizationUnitIds ?? [])];
@@ -225,11 +232,15 @@ export class AccessService {
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1_000);
     const acceptUrl = buildUserInvitationUrl(this.config?.webAppUrl ?? 'http://platform.localhost:3000', hostname, token, this.config?.isProduction ?? false);
     const id = cryptoRandomId();
+    if (!tenantPersonId && input.studentId) {
+      const student = await tx.student.findFirst({ where: { tenantId, id: input.studentId }, select: { personId: true } });
+      tenantPersonId = student?.personId ?? null;
+    }
     const user = await tx.user.create({
       data: {
         id, tenantId, email: input.email, phone: input.phone?.trim() || null,
         firstName: input.firstName, lastName: input.lastName?.trim() || null, passwordHash,
-        status: 'INVITED', mustChangePassword: true, studentId: input.studentId ?? null,
+        status: 'INVITED', mustChangePassword: true, studentId: input.studentId ?? null, tenantPersonId,
         guardianId: input.guardianId ?? null, createdBy: actorId ?? null,
         invitationTokenHash: tokenHash, invitationExpiresAt: expiresAt,
       },
@@ -305,11 +316,11 @@ export class AccessService {
     const actorId = this.tenantContext.require().userId;
     const roleIds = [...new Set(input.roleIds)];
     return this.prisma.transactionWithRetry(async (tx) => {
-      const user = await tx.user.findFirst({ where: { tenantId, id: userId, deletedAt: null }, select: { id: true, email: true, studentId: true, guardianId: true } });
+      const user = await tx.user.findFirst({ where: { tenantId, id: userId, deletedAt: null }, select: { id: true, email: true, studentId: true, guardianId: true, tenantPersonId: true } });
       if (!user) throw AppError.notFound('User');
       const roles = await this.assertRoleIds(tx, tenantId, roleIds);
       this.assertMayAssignTenantAdministratorRole(roles.map((role) => role.key));
-      await this.assertPortalIdentity(tx, tenantId, roles.map((role) => role.key), user.studentId ?? null, user.guardianId ?? null, user.id);
+      await this.assertPortalIdentity(tx, tenantId, roles.map((role) => role.key), user.studentId ?? null, user.guardianId ?? null, user.tenantPersonId ?? null, user.id, user.email);
       const existing = await tx.userRole.findMany({ where: { tenantId, userId } });
       const existingRoleIds = [...new Set(existing.map(({ roleId }) => roleId))];
       const existingRoles = existingRoleIds.length ? await tx.role.findMany({ where: { tenantId, id: { in: existingRoleIds } }, select: { id: true, key: true } }) : [];
@@ -498,13 +509,14 @@ export class AccessService {
 
   async listPortalSubjects(tenantId: string) {
     this.assertTenant(tenantId);
-    const [students, guardianLinks] = await Promise.all([
+    const [students, guardianLinks, persons] = await Promise.all([
       this.prisma.db.student.findMany({ where: { tenantId, status: 'ACTIVE', deletedAt: null }, orderBy: [{ admissionNumber: 'asc' }], take: 500, select: { id: true, admissionNumber: true, firstName: true, middleName: true, lastName: true } }),
       this.prisma.db.studentGuardian.findMany({ where: { tenantId }, select: { guardianId: true }, distinct: ['guardianId'], take: 500 }),
+      this.prisma.db.tenantPerson.findMany({ where: { tenantId, status: 'ACTIVE', deletedAt: null, account: null }, orderBy: [{ personNumber: 'asc' }], take: 1000, select: { id: true, personNumber: true, typeLabel: true, firstName: true, middleName: true, lastName: true, email: true, branchId: true } }),
     ]);
     const guardianIds = guardianLinks.map(({ guardianId }) => guardianId);
     const guardians = guardianIds.length ? await this.prisma.db.guardian.findMany({ where: { tenantId, id: { in: guardianIds }, deletedAt: null }, orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }], take: 500, select: { id: true, firstName: true, lastName: true, email: true, phone: true } }) : [];
-    return { students, guardians };
+    return { students, guardians, persons };
   }
 
   async permissionCatalog(tenantId: string) {
@@ -580,10 +592,21 @@ export class AccessService {
     return assertTenantUserSeatAvailable(tx, tenantId);
   }
 
-  private async assertPortalIdentity(tx: TransactionClient, tenantId: string, roleKeys: string[], studentId: string | null, guardianId: string | null, excludeUserId?: string): Promise<void> {
+  private async assertPortalIdentity(tx: TransactionClient, tenantId: string, roleKeys: string[], studentId: string | null, guardianId: string | null, tenantPersonId: string | null, excludeUserId?: string, accountEmail?: string): Promise<void> {
     const portalRoles = roleKeys.filter((key) => key === 'STUDENT' || key === 'PARENT');
+    const isWorkspacePerson = roleKeys.includes('WORKSPACE_PERSON');
+    if (isWorkspacePerson) {
+      if (roleKeys.length !== 1 || portalRoles.length || !tenantPersonId || studentId || guardianId) throw AppError.validation('A person portal account must have only the Workspace Person role and link to exactly one person profile.');
+      const person = await tx.tenantPerson.findFirst({ where: { tenantId, id: tenantPersonId, status: 'ACTIVE', deletedAt: null }, select: { id: true, email: true } });
+      if (!person) throw AppError.validation('Choose an active person profile from this organization.');
+      if (!person.email) throw AppError.validation('Add an email address to this person profile before sending an account invitation.');
+      if (accountEmail && person.email.toLowerCase() !== accountEmail.toLowerCase()) throw AppError.validation('The invitation email must match the email address on this person profile.');
+      const existing = await tx.user.findFirst({ where: { tenantId, tenantPersonId, deletedAt: null, ...(excludeUserId ? { id: { not: excludeUserId } } : {}) }, select: { id: true } });
+      if (existing) throw AppError.conflict('PERSON_PORTAL_EXISTS', 'This person already has a workspace account. Manage the existing account instead.');
+      return;
+    }
     if (portalRoles.length === 0) {
-      if (studentId || guardianId) throw AppError.validation('Student or guardian links are only valid for portal accounts.');
+      if (studentId || guardianId || tenantPersonId) throw AppError.validation('A person, student, or guardian link is only valid for a portal account.');
       return;
     }
     if (roleKeys.length !== 1 || portalRoles.length !== 1) throw AppError.validation('A portal account must have exactly one portal role and no staff roles.');

@@ -16,7 +16,7 @@ const ACCRUAL_PAGE_SIZE = 200;
 type LateFeeCandidate = {
   id: string; demandId: string; netAmount: Prisma.Decimal; adjustmentAmount: Prisma.Decimal; paidAmount: Prisma.Decimal;
   waivedAmount: Prisma.Decimal; dueDate: Date | null;
-  demand: { id: string; branchId: string | null; studentId: string; demandNumber: string; academicYearId: string | null; financialPeriod: string | null; currency: string; issueDate: Date };
+  demand: { id: string; branchId: string | null; studentId: string | null; personId: string | null; demandNumber: string; academicYearId: string | null; financialPeriod: string | null; currency: string; issueDate: Date };
 };
 
 @Injectable()
@@ -40,14 +40,19 @@ export class LateFeesService {
     const demandItemIds = [...new Set(rows.flatMap(({ demandItemId }) => demandItemId ? [demandItemId] : []))];
     const resultDemandIds = [...new Set(rows.map(({ resultDemandId }) => resultDemandId).filter((id): id is string => Boolean(id)))];
     const [demands, demandItems, resultDemands] = await Promise.all([
-      demandIds.length ? this.prisma.db.feeDemand.findMany({ where: { tenantId, id: { in: demandIds } }, select: { id: true, studentId: true, demandNumber: true, currency: true, status: true } }) : Promise.resolve([]),
+      demandIds.length ? this.prisma.db.feeDemand.findMany({ where: { tenantId, id: { in: demandIds } }, select: { id: true, studentId: true, personId: true, demandNumber: true, currency: true, status: true } }) : Promise.resolve([]),
       demandItemIds.length ? this.prisma.db.feeDemandItem.findMany({ where: { tenantId, id: { in: demandItemIds } }, select: { id: true, feeTypeName: true, dueDate: true, netAmount: true, adjustmentAmount: true, paidAmount: true, waivedAmount: true } }) : Promise.resolve([]),
       resultDemandIds.length ? this.prisma.db.feeDemand.findMany({ where: { tenantId, id: { in: resultDemandIds } }, select: { id: true, demandNumber: true, status: true, netAmount: true, currency: true } }) : Promise.resolve([]),
     ]);
-    const studentIds = [...new Set(demands.map(({ studentId }) => studentId))];
-    const students = studentIds.length ? await this.prisma.db.student.findMany({ where: { tenantId, id: { in: studentIds } }, select: { id: true, admissionNumber: true, firstName: true, lastName: true } }) : [];
+    const studentIds = [...new Set(demands.map(({ studentId }) => studentId).filter((id): id is string => Boolean(id)))];
+    const personIds = [...new Set(demands.map(({ personId }) => personId).filter((id): id is string => Boolean(id)))];
+    const [students, people] = await Promise.all([
+      studentIds.length ? this.prisma.db.student.findMany({ where: { tenantId, id: { in: studentIds } }, select: { id: true, admissionNumber: true, firstName: true, lastName: true } }) : Promise.resolve([]),
+      personIds.length ? this.prisma.db.tenantPerson.findMany({ where: { tenantId, id: { in: personIds } }, select: { id: true, personNumber: true, typeLabel: true, firstName: true, lastName: true } }) : Promise.resolve([]),
+    ]);
     const studentsById = new Map(students.map((student) => [student.id, student]));
-    const demandById = new Map(demands.map((demand) => [demand.id, { ...demand, student: studentsById.get(demand.studentId) ?? null }]));
+    const peopleById = new Map(people.map((person) => [person.id, person]));
+    const demandById = new Map(demands.map((demand) => [demand.id, { ...demand, student: demand.studentId ? studentsById.get(demand.studentId) ?? null : null, person: demand.personId ? peopleById.get(demand.personId) ?? null : null }]));
     const itemById = new Map(demandItems.map((item) => [item.id, item]));
     const resultDemandById = new Map(resultDemands.map((demand) => [demand.id, demand]));
     return rows.map((row) => ({ ...row, demand: demandById.get(row.demandId) ?? null, demandItem: row.demandItemId ? itemById.get(row.demandItemId) ?? null : null, resultDemand: row.resultDemandId ? resultDemandById.get(row.resultDemandId) ?? null : null }));
@@ -80,7 +85,7 @@ export class LateFeesService {
 
           const itemRow = await tx.feeDemandItem.findFirst({ where: { tenantId, id: candidate.id, status: { in: ['UNPAID', 'PARTIALLY_PAID'] }, dueDate: { lt: asOf } } });
           if (!itemRow) return null;
-          const demand = await tx.feeDemand.findFirst({ where: { tenantId, id: itemRow.demandId, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] } }, select: { id: true, branchId: true, studentId: true, demandNumber: true, academicYearId: true, financialPeriod: true, currency: true, issueDate: true } });
+          const demand = await tx.feeDemand.findFirst({ where: { tenantId, id: itemRow.demandId, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] } }, select: { id: true, branchId: true, studentId: true, personId: true, demandNumber: true, academicYearId: true, financialPeriod: true, currency: true, issueDate: true } });
           if (!demand) return null;
           const item: LateFeeCandidate = { ...itemRow, demand };
 
@@ -142,6 +147,7 @@ export class LateFeesService {
               tenantId,
               branchId: item.demand.branchId,
               studentId: item.demand.studentId,
+              personId: item.demand.personId,
               demandNumber,
               academicYearId: item.demand.academicYearId,
               financialPeriod: item.demand.financialPeriod,
@@ -271,7 +277,7 @@ export class LateFeesService {
             eventType: 'lateFee.accrued',
             aggregateType: 'FeeDemand',
             aggregateId: demandId,
-            payload: { demandId, demandNumber, sourceDemandId: item.demandId, sourceDemandNumber: item.demand.demandNumber, studentId: item.demand.studentId, amount: incrementalFee.toString(), taxAmount: taxAmount.toString(), currency },
+            payload: { demandId, demandNumber, sourceDemandId: item.demandId, sourceDemandNumber: item.demand.demandNumber, studentId: item.demand.studentId, personId: item.demand.personId, amount: incrementalFee.toString(), taxAmount: taxAmount.toString(), currency },
             actorId,
             requestId: this.tenantContext.requestId,
           });
@@ -313,7 +319,7 @@ export class LateFeesService {
       scanCursor = page[page.length - 1]!.id;
       exhausted = page.length < 500;
       const demandIds = [...new Set(page.map(({ demandId }) => demandId))];
-      const demands = await this.prisma.db.feeDemand.findMany({ where: { tenantId, id: { in: demandIds }, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] } }, select: { id: true, branchId: true, studentId: true, demandNumber: true, academicYearId: true, financialPeriod: true, currency: true, issueDate: true } });
+      const demands = await this.prisma.db.feeDemand.findMany({ where: { tenantId, id: { in: demandIds }, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] } }, select: { id: true, branchId: true, studentId: true, personId: true, demandNumber: true, academicYearId: true, financialPeriod: true, currency: true, issueDate: true } });
       const demandById = new Map(demands.map((demand) => [demand.id, demand]));
       for (const item of page) {
         const demand = demandById.get(item.demandId);

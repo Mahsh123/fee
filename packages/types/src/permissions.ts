@@ -546,6 +546,16 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
     PERMISSIONS.RECEIPT_READ,
     PERMISSIONS.DASHBOARD_READ,
   ],
+
+  /** Generic member/person portal for non-education tenant categories. */
+  WORKSPACE_PERSON: [
+    PERMISSIONS.ATTENDANCE_READ,
+    PERMISSIONS.FEE_DEMAND_READ,
+    PERMISSIONS.PAYMENT_READ,
+    PERMISSIONS.PAYMENT_COLLECT,
+    PERMISSIONS.RECEIPT_READ,
+    PERMISSIONS.DASHBOARD_READ,
+  ],
 };
 
 export function permissionsForRoles(roles: readonly RoleKey[]): string[] {

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, Check, KeyRound } from 'lucide-react';
 import { ApiError, apiRequest } from '../../lib/api';
 import { useTenant } from '../../components/tenant-provider';
@@ -13,8 +13,11 @@ export default function ResetPasswordPage() {
   const [reset, setReset] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const resetFragmentCaptured = useRef(false);
 
   useEffect(() => {
+    if (resetFragmentCaptured.current) return;
+    resetFragmentCaptured.current = true;
     const value = window.location.hash.slice(1);
     setToken(value);
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);

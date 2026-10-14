@@ -159,7 +159,7 @@ export function buildAclManifest(inventory, { auditMode = 'legacy', hasCapabilit
   runtime.set(modelTable('Notification'), {
     select: true,
     insert: true,
-    updateColumns: ['tenantId', 'status', 'attemptCount', 'sentAt', 'deliveredAt', 'providerMessageId', 'lastError', 'updatedAt'],
+    updateColumns: ['tenantId', 'status', 'attemptCount', 'sentAt', 'deliveredAt', 'readAt', 'providerMessageId', 'lastError', 'updatedAt'],
   });
 
   // Complete the operation grant surface for the assembled domain modules.
@@ -188,7 +188,7 @@ export function buildAclManifest(inventory, { auditMode = 'legacy', hasCapabilit
   const addAccess = (models, options = {}) => { for (const model of models) addModelAccess(model, options); };
 
   addAccess([
-    'Adjustment', 'AdmissionApplication', 'ApprovalRequest', 'BenefitAssignment', 'Concession', 'Credit',
+    'Adjustment', 'AdmissionApplication', 'ApprovalRequest', 'AttendanceRecord', 'AttendanceSession', 'BenefitAssignment', 'Concession', 'Credit',
     'CreditAllocation', 'Discount', 'FeeAssignment', 'FeeDemand', 'FeeDemandItem', 'FeeDemandItemAdjustment',
     'FeeDemandResponsibility', 'FeeOverride', 'FeePolicy', 'FeePolicyAction', 'FeePolicyScope', 'FeePolicyVersion',
     'FeeStructure', 'FeeStructureItem', 'FeeStructureVersion', 'FeeType', 'FeeTypeVersion', 'GatewayTransaction',
@@ -213,7 +213,7 @@ export function buildAclManifest(inventory, { auditMode = 'legacy', hasCapabilit
   ], { insert: true });
 
   addAccess([
-    'Adjustment', 'AdmissionApplication', 'ApprovalRequest', 'BenefitAssignment', 'Concession', 'Credit',
+    'Adjustment', 'AdmissionApplication', 'ApprovalRequest', 'AttendanceRecord', 'AttendanceSession', 'BenefitAssignment', 'Concession', 'Credit',
     'CreditAllocation', 'Discount', 'FeeAssignment', 'FeeDemand', 'FeeDemandItem', 'FeeDemandItemAdjustment',
     'FeeDemandResponsibility', 'FeeOverride', 'FeePolicy', 'FeePolicyAction', 'FeePolicyScope', 'FeePolicyVersion',
     'FeeStructure', 'FeeStructureItem', 'FeeStructureVersion', 'FeeType', 'FeeTypeVersion', 'GatewayTransaction',
@@ -232,6 +232,7 @@ export function buildAclManifest(inventory, { auditMode = 'legacy', hasCapabilit
     AcademicYear: ['name', 'startDate', 'endDate', 'isCurrent', 'isClosed', 'closedAt'],
     AcademicUnit: ['unitType', 'name', 'code', 'parentId', 'metadata', 'active'],
     Adjustment: ['approvalRequestId', 'status', 'approvedBy', 'approvedAt', 'reversedAt', 'reversalReason', 'appliedAt'],
+    AttendanceRecord: ['status', 'remarks', 'updatedBy'],
     AdmissionApplication: ['applicantFirstName', 'applicantLastName', 'dateOfBirth', 'gender', 'phone', 'email', 'category', 'academicYearId', 'targetUnitId', 'admissionType', 'isInternational', 'metadata', 'status', 'submittedAt'],
     ApprovalRequest: ['status', 'decidedBy', 'decidedAt', 'decisionNote', 'executedAt'],
     BenefitAssignment: ['status', 'approvedBy', 'approvedAt', 'updatedBy'],
@@ -255,7 +256,7 @@ export function buildAclManifest(inventory, { auditMode = 'legacy', hasCapabilit
     InstallmentItem: ['paidAmount', 'adjustmentAmount'],
     Invoice: ['paidAmount', 'adjustmentAmount', 'status'],
     LedgerEntry: ['status', 'reversedByGroupId'],
-    Notification: ['status', 'attemptCount', 'sentAt', 'deliveredAt', 'providerMessageId', 'lastError'],
+    Notification: ['status', 'attemptCount', 'sentAt', 'deliveredAt', 'readAt', 'providerMessageId', 'lastError'],
     NotificationTemplate: ['subject', 'body', 'variables', 'active'],
     OutboxEvent: ['status', 'attempts', 'lastError', 'availableAt', 'publishedAt'],
     PayerResponsibilityRule: ['active'],
@@ -287,7 +288,7 @@ export function buildAclManifest(inventory, { auditMode = 'legacy', hasCapabilit
     StudentCustomAttribute: ['value', 'valueType'],
     StudentGroup: ['name', 'code', 'description', 'membershipRule', 'isDynamic'],
     Tenant: [
-      'slug', 'name', 'status', 'contactEmail', 'contactPhone', 'countryCode', 'trialEndsAt',
+      'slug', 'name', 'status', 'contactEmail', 'contactPhone', 'countryCode', 'enabledModules', 'trialEndsAt',
       'subscriptionPlan', 'subscriptionStatus', 'subscriptionRenewalAt', 'updatedBy',
     ],
     TenantDomain: ['isPrimary', 'verifiedAt', 'verificationToken'],

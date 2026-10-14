@@ -116,13 +116,15 @@ export class GatewaysService {
     this.assertTenant(tenantId);
     const requestContext = this.tenantContext.require();
     const actorId = requestContext.userId;
-    const portalOnly = Boolean(requestContext.roles?.length && requestContext.roles.every((role) => role === 'STUDENT' || role === 'PARENT'));
+    const portalOnly = Boolean(requestContext.roles?.length && requestContext.roles.every((role) => role === 'STUDENT' || role === 'PARENT' || role === 'WORKSPACE_PERSON'));
     const isParentPortal = portalOnly && requestContext.roles?.includes('PARENT') === true;
-    const payerType = resolveOrderPayerType(input.payerType, { portalOnly, isParentPortal });
+    const isWorkspacePersonPortal = portalOnly && requestContext.roles?.includes('WORKSPACE_PERSON') === true;
+    const payerType = resolveOrderPayerType(input.payerType, { portalOnly, isParentPortal, isWorkspacePersonPortal });
     const idempotencyScope = portalOnly ? `payment.gateway.order.portal:${actorId}` : 'payment.gateway.order';
     const requestHash = IdempotencyService.fingerprint(input);
     const prepared = await this.prisma.transactionWithRetry(async (tx) => {
-      await this.assertPortalStudentAccess(tx, tenantId, input.studentId);
+      if (input.studentId) await this.assertPortalStudentAccess(tx, tenantId, input.studentId);
+      // planPayerPayment performs the owner-person check for workspace-person portal sessions.
       const reservation = await this.idempotency.reserve(tx, { tenantId, scope: idempotencyScope, key: input.idempotencyKey, requestHash });
       if (!reservation.isNew) return { kind: 'cached' as const, cachedResponse: reservation.cachedResponse?.body };
       const settings = await tx.tenantSettings.findUnique({ where: { tenantId } });
@@ -132,22 +134,26 @@ export class GatewaysService {
       toMinorUnits(amount, minorUnits);
       const payerGuardianId = input.payerGuardianId ?? (isParentPortal ? requestContext.guardianId ?? null : null);
       if (isParentPortal && input.payerGuardianId && input.payerGuardianId !== requestContext.guardianId) throw AppError.forbidden('Portal users may only pay as their linked guardian identity.');
-      const [student, method, sponsor, guardian] = await Promise.all([
-        tx.student.findFirst({ where: { tenantId, id: input.studentId, deletedAt: null }, select: { id: true, admissionNumber: true, firstName: true, lastName: true, email: true, phone: true } }),
+      const [student, person, method, sponsor, guardian] = await Promise.all([
+        input.studentId ? tx.student.findFirst({ where: { tenantId, id: input.studentId, deletedAt: null }, select: { id: true, admissionNumber: true, firstName: true, lastName: true, email: true, phone: true, branchId: true } }) : null,
+        input.personId ? tx.tenantPerson.findFirst({ where: { tenantId, id: input.personId, status: 'ACTIVE', deletedAt: null }, select: { id: true, personNumber: true, typeLabel: true, firstName: true, lastName: true, email: true, phone: true, branchId: true } }) : null,
         tx.paymentMethod.findFirst({ where: { tenantId, id: input.methodId, active: true, enabledForOnline: true } }),
         input.payerSponsorId ? tx.sponsor.findFirst({ where: { tenantId, id: input.payerSponsorId, active: true, deletedAt: null }, select: { id: true, name: true } }) : Promise.resolve(null),
         payerGuardianId ? tx.guardian.findFirst({ where: { tenantId, id: payerGuardianId, deletedAt: null }, select: { id: true, firstName: true, lastName: true, phone: true, email: true } }) : Promise.resolve(null),
       ]);
-      if (!student) throw AppError.notFound('Student');
+      if (!student && !person) throw AppError.notFound(input.personId ? 'Person' : 'Student');
+      const subject = student ? { ...student, studentId: student.id, personId: null as string | null } : { ...person!, admissionNumber: person!.personNumber, studentId: null as string | null, personId: person!.id };
       if (!method) throw AppError.validation('Choose an active tenant payment method enabled for online checkout.');
       if (payerType === 'SPONSOR' && !sponsor) throw AppError.validation('Choose an active sponsor from this institution.');
       if (['PARENT', 'GUARDIAN'].includes(payerType) && !guardian) throw AppError.validation('Choose a linked guardian who will pay.');
       if (guardian && !['PARENT', 'GUARDIAN'].includes(payerType)) throw AppError.validation('A guardian reference is only valid for a parent or guardian payment.');
-      if (guardian) {
+      if (guardian && student) {
         const link = await tx.studentGuardian.findFirst({ where: { tenantId, guardianId: guardian.id, studentId: student.id }, select: { id: true } });
         if (!link) throw AppError.validation('The selected guardian is not linked to this student.');
       }
-      const payerPlan = await this.payments.planPayerPayment(tx, tenantId, student.id, { type: payerType, sponsorId: sponsor?.id ?? null, payerGuardianId: guardian?.id ?? null, payerName: input.payerName ?? null }, amount, input.demandItemIds);
+      if (isWorkspacePersonPortal && !person) throw AppError.forbidden('A workspace person can only pay demands attached to their own person profile.');
+      if (person && guardian) throw AppError.validation('A generic person payment cannot use a student guardian link.');
+      const payerPlan = await this.payments.planPayerPayment(tx, tenantId, subject.id, { type: payerType, sponsorId: sponsor?.id ?? null, payerGuardianId: guardian?.id ?? null, payerName: input.payerName ?? null }, amount, input.demandItemIds, person ? 'personId' : 'studentId');
       const balance = payerPlan.balance;
       if (!amount.isPositive || amount.greaterThan(balance)) throw AppError.validation(`Online order amount cannot exceed the selected open balance (${balance.format()}).`);
       if (amount.lessThan(balance) && settings?.partialPaymentPolicy === 'DISALLOW') throw AppError.validation('Tenant settings do not allow partial online payment.');
@@ -156,7 +162,7 @@ export class GatewaysService {
       const orderId = randomUUID();
       const orderNumber = `PO-${orderId.slice(0, 12).toUpperCase()}`;
       const order = await tx.paymentOrder.create({ data: {
-        id: orderId, tenantId, branchId: payerPlan.branchId, orderNumber, studentId: student.id, methodId: method.id,
+        id: orderId, tenantId, branchId: payerPlan.branchId, orderNumber, studentId: student?.id ?? null, personId: person?.id ?? null, methodId: method.id,
         amount: amount.toString(), currency, purpose: 'FEE_PAYMENT', channel: 'ONLINE', status: 'CREATED',
         payerType, payerName: guardian ? `${guardian.firstName} ${guardian.lastName ?? ''}`.trim() : input.payerName ?? null, payerPhone: input.payerPhone ?? guardian?.phone ?? null,
         payerEmail: input.payerEmail ?? guardian?.email ?? null, payerSponsorId: sponsor?.id ?? null, payerGuardianId: guardian?.id ?? null,
@@ -168,10 +174,10 @@ export class GatewaysService {
         tenantId, paymentOrderId: order.id, gatewayConfigId: gateway.id, provider: gateway.provider, environment: gateway.environment,
         status: 'CREATED', amount: amount.toString(), currency, methodKind: method.kind,
         providerOrderId: createAdapter(gateway.provider).orderReferenceForStatusLookup(orderNumber),
-        requestPayload: { orderNumber, studentId: student.id, amount: amount.toString(), currency, methodKind: method.kind } as Prisma.InputJsonValue,
+        requestPayload: { orderNumber, studentId: student?.id ?? null, personId: person?.id ?? null, amount: amount.toString(), currency, methodKind: method.kind } as Prisma.InputJsonValue,
       } });
       const response = { orderId: order.id, orderNumber, status: 'CREATED', provider: gateway.provider, environment: gateway.environment };
-      return { kind: 'new' as const, reservationId: reservation.id, order, transaction, gateway, student, method, amount, currency, minorUnits, response };
+      return { kind: 'new' as const, reservationId: reservation.id, order, transaction, gateway, student: { id: subject.id, admissionNumber: subject.admissionNumber, firstName: subject.firstName, lastName: subject.lastName, email: subject.email, phone: subject.phone }, method, amount, currency, minorUnits, response };
     });
     if (prepared.kind === 'cached') return prepared.cachedResponse;
     const { order, transaction, gateway, student, method, amount, currency, minorUnits, reservationId } = prepared;
@@ -225,10 +231,13 @@ export class GatewaysService {
 
   async getOrder(tenantId: string, orderId: string) {
     this.assertTenant(tenantId);
-    const studentIds = await this.portalStudentScope(tenantId);
+    const portalScope = await this.portalPaymentOrderScope(tenantId);
     const query = {
-      where: { tenantId, id: orderId, channel: 'ONLINE' as const, ...(studentIds ? { studentId: { in: studentIds } } : {}) },
-      select: { id: true, orderNumber: true, amount: true, currency: true, status: true, payerType: true, createdAt: true, expiresAt: true, completedAt: true, studentId: true },
+      where: {
+        tenantId, id: orderId, channel: 'ONLINE' as const,
+        ...(portalScope ? ('personId' in portalScope ? { personId: portalScope.personId } : { studentId: { in: portalScope.studentIds } }) : {}),
+      },
+      select: { id: true, orderNumber: true, amount: true, currency: true, status: true, payerType: true, createdAt: true, expiresAt: true, completedAt: true, studentId: true, personId: true },
     };
     const order = await this.prisma.db.paymentOrder.findFirst(query);
     if (!order) throw AppError.notFound('Payment order');
@@ -393,17 +402,22 @@ export class GatewaysService {
     throw AppError.notFound('Student');
   }
 
-  private async portalStudentScope(tenantId: string): Promise<string[] | null> {
+  private async portalPaymentOrderScope(tenantId: string): Promise<{ personId: string } | { studentIds: string[] } | null> {
     const context = this.tenantContext.require();
     const roles = context.roles ?? [];
-    const portalOnly = roles.length > 0 && roles.every((role) => role === 'STUDENT' || role === 'PARENT');
+    const portalOnly = roles.length > 0 && roles.every((role) => role === 'STUDENT' || role === 'PARENT' || role === 'WORKSPACE_PERSON');
     if (!portalOnly) return null;
-    if (roles.includes('STUDENT') && context.studentId) return [context.studentId];
+    if (roles.includes('WORKSPACE_PERSON')) {
+      if (!context.userId) return { studentIds: [] };
+      const user = await this.prisma.db.user.findFirst({ where: { tenantId, id: context.userId, status: 'ACTIVE', deletedAt: null }, select: { tenantPersonId: true } });
+      return user?.tenantPersonId ? { personId: user.tenantPersonId } : { studentIds: [] };
+    }
+    if (roles.includes('STUDENT') && context.studentId) return { studentIds: [context.studentId] };
     if (roles.includes('PARENT') && context.guardianId) {
       const links = await this.prisma.db.studentGuardian.findMany({ where: { tenantId, guardianId: context.guardianId }, select: { studentId: true } });
-      return [...new Set(links.map((link) => link.studentId))];
+      return { studentIds: [...new Set(links.map((link) => link.studentId))] };
     }
-    return [];
+    return { studentIds: [] };
   }
 
   async receiveWebhook(tenantId: string, configId: string, request: RequestWithContext) {

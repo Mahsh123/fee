@@ -76,7 +76,7 @@ test('grants reviewed application access and keeps audit v2 direct access closed
     insert: true,
     delete: false,
     updateColumns: [
-      'updatedAt', 'slug', 'name', 'status', 'contactEmail', 'contactPhone', 'countryCode', 'trialEndsAt',
+      'updatedAt', 'slug', 'name', 'status', 'contactEmail', 'contactPhone', 'countryCode', 'enabledModules', 'trialEndsAt',
       'subscriptionPlan', 'subscriptionStatus', 'subscriptionRenewalAt', 'updatedBy',
     ],
   });
@@ -130,6 +130,14 @@ test('grants the SaaS provisioning, organization, subscription and billing paths
   includes('platform_invoices', ['tenantId', 'status', 'paidAt']);
   includes('platform_payments', ['tenantId', 'status']);
   includes('platform_refunds', ['tenantId', 'status', 'processedAt']);
+
+  assert.deepEqual(runtime.get('attendance_sessions'), {
+    select: true, insert: true, delete: false, updateColumns: ['tenantId', 'updatedAt'],
+  });
+  assert.deepEqual(runtime.get('attendance_records'), {
+    select: true, insert: true, delete: false, updateColumns: ['tenantId', 'updatedAt', 'status', 'remarks', 'updatedBy'],
+  });
+  assert.ok(runtime.get('notifications').updateColumns.includes('readAt'));
 
   for (const internalTable of ['audit_chain_heads', 'audit_signing_keys', 'audit_request_nonces', 'sequences', 'schema_index_builds']) {
     assert.equal(runtime.has(internalTable), false, `${internalTable} must stay closed to direct runtime access`);

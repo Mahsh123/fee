@@ -26,6 +26,19 @@ export class TenantHostResolutionMiddleware implements NestMiddleware {
     const parsed = resolveTenantHost(request.headers.host, this.config.tenantBaseDomain, this.config.platformSubdomain);
     let resolved: ResolvedTenantHost;
 
+    // Health probes use localhost/127.0.0.1 and are not workspace requests.
+    // Resolving them as custom domains would add a Neon lookup to every
+    // readiness probe and can consume connections needed by real requests.
+    if (request.path === '/health' || request.path.startsWith('/health/')) {
+      resolved = parsed.kind === 'platform'
+        ? { kind: 'platform', hostname: parsed.hostname, baseDomain: this.config.tenantBaseDomain }
+        : { kind: 'unknown', hostname: parsed.hostname, baseDomain: this.config.tenantBaseDomain, ...('slug' in parsed && parsed.slug ? { slug: parsed.slug } : {}) };
+      request.tenantHost = resolved;
+      this.context.establishTenantHost(resolved);
+      next();
+      return;
+    }
+
     if (parsed.kind === 'platform') {
       resolved = { kind: 'platform', hostname: parsed.hostname, baseDomain: this.config.tenantBaseDomain };
     } else if (parsed.kind === 'tenant') {

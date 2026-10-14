@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { TenantHostResolutionMiddleware } from './tenant-host';
 import { TenantContextService } from './tenancy';
 
-function invoke(middleware: TenantHostResolutionMiddleware, host: string) {
-  const request = { headers: { host }, requestId: 'tenant-host-test-001' };
+function invoke(middleware: TenantHostResolutionMiddleware, host: string, path = '/') {
+  const request = { headers: { host }, path, requestId: 'tenant-host-test-001' };
   const response = { vary: vi.fn() };
   const next = vi.fn();
   return middleware.use(request as never, response as never, next).then(() => ({ request, response, next }));
@@ -23,6 +23,24 @@ describe('TenantHostResolutionMiddleware', () => {
     const result = await context.run({ requestId: 'tenant-host-test-001' }, () => invoke(middleware, 'super.localhost:4100'));
 
     expect(result.request).toMatchObject({ tenantHost: { kind: 'platform', hostname: 'super.localhost', baseDomain: 'localhost' } });
+    expect(result.next).toHaveBeenCalledOnce();
+    expect(tenantFindUnique).not.toHaveBeenCalled();
+    expect(tenantFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('does not query Neon to resolve an unversioned health probe host', async () => {
+    const tenantFindFirst = vi.fn();
+    const tenantFindUnique = vi.fn();
+    const middleware = new TenantHostResolutionMiddleware(
+      { db: { tenant: { findUnique: tenantFindUnique, findFirst: tenantFindFirst } } } as never,
+      { tenantBaseDomain: 'localhost', platformSubdomain: 'platform' } as never,
+      new TenantContextService(),
+    );
+    const context = new TenantContextService();
+
+    const result = await context.run({ requestId: 'tenant-host-test-001' }, () => invoke(middleware, '127.0.0.1:4000', '/health/ready'));
+
+    expect(result.request).toMatchObject({ tenantHost: { kind: 'unknown', hostname: '127.0.0.1', baseDomain: 'localhost' } });
     expect(result.next).toHaveBeenCalledOnce();
     expect(tenantFindUnique).not.toHaveBeenCalled();
     expect(tenantFindFirst).not.toHaveBeenCalled();

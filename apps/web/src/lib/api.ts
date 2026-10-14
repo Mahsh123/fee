@@ -201,6 +201,21 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
   return request<T>(path, init, true);
 }
 
+export async function apiDownload(path: string): Promise<Blob> {
+  const send = (token?: string) => fetch(`${apiBase()}${path}`, { credentials: 'include', cache: 'no-store', headers: token ? { authorization: `Bearer ${token}` } : undefined });
+  let session: BrowserSession | null = readSession();
+  let response = await send(session?.accessToken);
+  if (response.status === 401) {
+    session = await refreshSession();
+    if (session) response = await send(session.accessToken);
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as ApiResponse<unknown> | null;
+    throw new ApiError(body && !body.success ? body.error.message : 'The file could not be downloaded.', response.status, body && !body.success ? body.error.code : undefined);
+  }
+  return response.blob();
+}
+
 async function request<T>(path: string, init: RequestInit, retry401: boolean): Promise<T> {
   const session = readSession();
   const headers = new Headers(init.headers);

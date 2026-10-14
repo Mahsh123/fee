@@ -229,6 +229,8 @@ export class TokenService {
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
+  private platformTenantLookup: Promise<string | null> | null = null;
+
   constructor(
     private readonly reflector: Reflector,
     private readonly tokens: TokenService,
@@ -273,11 +275,8 @@ export class JwtAuthGuard implements CanActivate {
         throw new AppError({ code: ERROR_CODES.TENANT_MISMATCH, message: 'Your session does not belong to this institution hostname.' });
       }
     } else {
-      const platformTenant = await this.prisma.db.tenant.findUnique({
-        where: { slug: PLATFORM_SYSTEM_TENANT_SLUG },
-        select: { id: true },
-      });
-      if (!claims.platform || !platformTenant || claims.tid !== platformTenant.id) {
+      const platformTenantId = await this.getPlatformTenantId();
+      if (!claims.platform || !platformTenantId || claims.tid !== platformTenantId) {
         throw AppError.forbidden('Only platform administrator sessions can use the platform hostname.');
       }
     }
@@ -317,7 +316,7 @@ export class JwtAuthGuard implements CanActivate {
     });
 
     const isTenantAdmin = claims.roles.some((role) => role === 'TENANT_ADMIN' || role === 'TENANT_OWNER');
-    const isPortalOnly = claims.roles.length > 0 && claims.roles.every((role) => role === 'STUDENT' || role === 'PARENT');
+    const isPortalOnly = claims.roles.length > 0 && claims.roles.every(isPortalRole);
     if (host.kind === 'tenant' && !claims.platform && !isTenantAdmin && !isPortalOnly) {
       // Resolve memberships from the database on each request so removing a
       // user's branch access takes effect immediately and cannot be forged in a
@@ -337,6 +336,26 @@ export class JwtAuthGuard implements CanActivate {
 
     return true;
   }
+
+  /**
+   * The platform workspace is a reserved singleton. Cache its immutable ID
+   * after the first successful lookup so every platform API request does not
+   * spend another Neon connection validating the same signed tenant claim.
+   * A transient database error clears the promise and can be retried.
+   */
+  private getPlatformTenantId(): Promise<string | null> {
+    if (!this.platformTenantLookup) {
+      const lookup = this.prisma.db.tenant.findUnique({
+        where: { slug: PLATFORM_SYSTEM_TENANT_SLUG },
+        select: { id: true },
+      }).then((tenant) => tenant?.id ?? null);
+      this.platformTenantLookup = lookup.catch((error: unknown) => {
+        this.platformTenantLookup = null;
+        throw error;
+      });
+    }
+    return this.platformTenantLookup;
+  }
 }
 
 @Injectable()
@@ -351,8 +370,8 @@ export class PermissionsGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<RequestWithContext>();
     const isPortalRoute = this.reflector.getAllAndOverride<boolean>(PORTAL_ROUTE_KEY, [context.getHandler(), context.getClass()]) ?? false;
     const roles = request.user?.roles ?? [];
-    const hasPortalRole = roles.some((role) => role === 'STUDENT' || role === 'PARENT');
-    const hasStaffRole = roles.some((role) => role !== 'STUDENT' && role !== 'PARENT');
+    const hasPortalRole = roles.some(isPortalRole);
+    const hasStaffRole = roles.some((role) => !isPortalRole(role));
     if (!isPortalRoute && hasPortalRole && !hasStaffRole) throw new ForbiddenException('Portal accounts can only use portal endpoints.');
     if (!required || required.length === 0) return true;
 
@@ -368,6 +387,8 @@ export class PermissionsGuard implements CanActivate {
     return true;
   }
 }
+
+function isPortalRole(role: string): boolean { return role === 'STUDENT' || role === 'PARENT' || role === 'WORKSPACE_PERSON'; }
 
 /** Enforces plan and platform module access before any tenant controller runs. */
 @Injectable()
@@ -396,6 +417,8 @@ export class ModuleEntitlementGuard implements CanActivate {
 /** An explicit platform boundary; ordinary tenant roles never grant it. */
 @Injectable()
 export class PlatformAdminGuard implements CanActivate {
+  private readonly inFlightPlatformAdminChecks = new Map<string, Promise<boolean>>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
@@ -407,17 +430,29 @@ export class PlatformAdminGuard implements CanActivate {
     if (!actor?.isPlatformAdmin || !actor.roles.includes('PLATFORM_ADMIN')) {
       throw new ForbiddenException('Super administrator access is required.');
     }
-    const currentUser = await this.tenantContext.run({
-      tenantId: actor.tenantId,
-      userId: actor.id,
-      roles: actor.roles,
-      requestId: this.tenantContext.requestId ?? 'platform-admin-guard',
-      isPlatformAdmin: true,
-    }, () => this.prisma.db.user.findFirst({
-      where: { id: actor.id, tenantId: actor.tenantId, isPlatformAdmin: true, deletedAt: null },
-      select: { status: true, sessionVersion: true },
-    }));
-    if (!currentUser || currentUser.status !== 'ACTIVE' || currentUser.sessionVersion !== (actor.sessionVersion ?? 0)) {
+    const sessionVersion = actor.sessionVersion ?? 0;
+    const key = `${actor.tenantId}:${actor.id}:${sessionVersion}`;
+    let validation = this.inFlightPlatformAdminChecks.get(key);
+    if (!validation) {
+      validation = this.tenantContext.run({
+        tenantId: actor.tenantId,
+        userId: actor.id,
+        roles: actor.roles,
+        requestId: this.tenantContext.requestId ?? 'platform-admin-guard',
+        isPlatformAdmin: true,
+      }, () => this.prisma.db.user.findFirst({
+        where: { id: actor.id, tenantId: actor.tenantId, isPlatformAdmin: true, deletedAt: null },
+        select: { status: true, sessionVersion: true },
+      })).then((currentUser) => Boolean(
+        currentUser && currentUser.status === 'ACTIVE' && currentUser.sessionVersion === sessionVersion,
+      ));
+      this.inFlightPlatformAdminChecks.set(key, validation);
+      const clear = () => {
+        if (this.inFlightPlatformAdminChecks.get(key) === validation) this.inFlightPlatformAdminChecks.delete(key);
+      };
+      void validation.then(clear, clear);
+    }
+    if (!await validation) {
       throw new UnauthorizedException('This Super Admin session is no longer active. Sign in again.');
     }
     return true;

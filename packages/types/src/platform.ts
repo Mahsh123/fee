@@ -19,7 +19,6 @@ export type CoreTenantModule = (typeof CORE_TENANT_MODULES)[number];
 export const TENANT_MODULE_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   FEES: ['PAYMENTS'],
   PORTAL: ['PAYMENTS'],
-  ATTENDANCE: ['ADMISSIONS'],
 });
 
 export function missingTenantModuleDependencies(moduleKeys: readonly string[]): string[] {
@@ -59,24 +58,25 @@ type OrganizationCategoryDefinition = {
   key: OrganizationCategoryKey;
   label: string;
   description: string;
+  personLabel: string;
   peopleLabel: string;
   groupLabel: string;
   suggestedModules: readonly PlatformModule[];
 };
 
 export const ORGANIZATION_CATEGORIES = [
-  { key: 'school', label: 'School', description: 'An education workspace for school operations.', peopleLabel: 'Students', groupLabel: 'Classes and sections', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
-  { key: 'madrasa', label: 'Madrasa', description: 'An education workspace with configurable groups and fee collection.', peopleLabel: 'Students', groupLabel: 'Classes and groups', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
-  { key: 'tuition_centre', label: 'Tuition Centre', description: 'An education workspace organised around batches.', peopleLabel: 'Students', groupLabel: 'Batches', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
-  { key: 'coaching_centre', label: 'Coaching Centre', description: 'An education workspace organised around batches and admissions.', peopleLabel: 'Students', groupLabel: 'Batches', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
-  { key: 'academy', label: 'Academy', description: 'A configurable training or education workspace.', peopleLabel: 'Students', groupLabel: 'Groups', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'ANALYTICS'] },
-  { key: 'college', label: 'College', description: 'An education workspace with configurable academic groups.', peopleLabel: 'Students', groupLabel: 'Classes and groups', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
-  { key: 'training_institute', label: 'Training Institute', description: 'A training workspace organised around groups or batches.', peopleLabel: 'Learners', groupLabel: 'Batches and groups', suggestedModules: ['ADMISSIONS', 'FEES', 'PAYMENTS', 'ANALYTICS'] },
-  { key: 'club_association', label: 'Club or Association', description: 'A member-oriented workspace using generic users and groups.', peopleLabel: 'Members', groupLabel: 'Groups', suggestedModules: ['FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
-  { key: 'gym_fitness', label: 'Gym or Fitness Centre', description: 'A member-oriented workspace using generic users and groups.', peopleLabel: 'Members', groupLabel: 'Groups', suggestedModules: ['FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
-  { key: 'company', label: 'Company', description: 'A general organisation workspace for people, branches, and groups.', peopleLabel: 'People', groupLabel: 'Departments and groups', suggestedModules: ['ANALYTICS'] },
-  { key: 'ngo', label: 'NGO', description: 'A general organisation workspace for people, branches, and groups.', peopleLabel: 'Members', groupLabel: 'Groups', suggestedModules: ['FEES', 'PAYMENTS', 'ANALYTICS'] },
-  { key: 'other_organisation', label: 'Other Organisation', description: 'A general-purpose workspace with configurable people and groups.', peopleLabel: 'People', groupLabel: 'Groups', suggestedModules: ['ANALYTICS'] },
+  { key: 'school', label: 'School', description: 'An education workspace for school operations.', personLabel: 'Student', peopleLabel: 'Students', groupLabel: 'Classes and sections', suggestedModules: ['ADMISSIONS', 'ATTENDANCE', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'madrasa', label: 'Madrasa', description: 'An education workspace with configurable groups and fee collection.', personLabel: 'Student', peopleLabel: 'Students', groupLabel: 'Classes and groups', suggestedModules: ['ADMISSIONS', 'ATTENDANCE', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'tuition_centre', label: 'Tuition Centre', description: 'An education workspace organised around batches.', personLabel: 'Student', peopleLabel: 'Students', groupLabel: 'Batches', suggestedModules: ['ADMISSIONS', 'ATTENDANCE', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'coaching_centre', label: 'Coaching Centre', description: 'An education workspace organised around batches and admissions.', personLabel: 'Student', peopleLabel: 'Students', groupLabel: 'Batches', suggestedModules: ['ADMISSIONS', 'ATTENDANCE', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'academy', label: 'Academy', description: 'A configurable training or education workspace.', personLabel: 'Student', peopleLabel: 'Students', groupLabel: 'Groups', suggestedModules: ['ADMISSIONS', 'ATTENDANCE', 'FEES', 'PAYMENTS', 'ANALYTICS'] },
+  { key: 'college', label: 'College', description: 'An education workspace with configurable academic groups.', personLabel: 'Student', peopleLabel: 'Students', groupLabel: 'Classes and groups', suggestedModules: ['ADMISSIONS', 'ATTENDANCE', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'training_institute', label: 'Training Institute', description: 'A training workspace organised around groups or batches.', personLabel: 'Learner', peopleLabel: 'Learners', groupLabel: 'Batches and groups', suggestedModules: ['ADMISSIONS', 'ATTENDANCE', 'FEES', 'PAYMENTS', 'ANALYTICS'] },
+  { key: 'club_association', label: 'Club or Association', description: 'A member-oriented workspace using generic users and groups.', personLabel: 'Member', peopleLabel: 'Members', groupLabel: 'Groups', suggestedModules: ['ATTENDANCE', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'gym_fitness', label: 'Gym or Fitness Centre', description: 'A member-oriented workspace using generic users and groups.', personLabel: 'Member', peopleLabel: 'Members', groupLabel: 'Groups', suggestedModules: ['ATTENDANCE', 'FEES', 'PAYMENTS', 'PORTAL', 'ANALYTICS'] },
+  { key: 'company', label: 'Company', description: 'A general organisation workspace for people, branches, and groups.', personLabel: 'Person', peopleLabel: 'People', groupLabel: 'Departments and groups', suggestedModules: ['ATTENDANCE', 'ANALYTICS'] },
+  { key: 'ngo', label: 'NGO', description: 'A general organisation workspace for people, branches, and groups.', personLabel: 'Member', peopleLabel: 'Members', groupLabel: 'Groups', suggestedModules: ['ATTENDANCE', 'FEES', 'PAYMENTS', 'ANALYTICS'] },
+  { key: 'other_organisation', label: 'Other Organisation', description: 'A general-purpose workspace with configurable people and groups.', personLabel: 'Person', peopleLabel: 'People', groupLabel: 'Groups', suggestedModules: ['ANALYTICS'] },
 ] as const satisfies readonly OrganizationCategoryDefinition[];
 
 const ORGANIZATION_CATEGORY_ALIASES: Readonly<Record<string, OrganizationCategoryKey>> = Object.freeze({
@@ -133,4 +133,5 @@ export const SYSTEM_ROLE_NAMES: Record<RoleKey, string> = {
   REPORT_VIEWER: 'Report viewer',
   STUDENT: 'Student portal',
   PARENT: 'Parent portal',
+  WORKSPACE_PERSON: 'Workspace person portal',
 };

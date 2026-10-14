@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ORGANIZATION_CATEGORIES, normalizeOrganizationCategory, organizationCategory, organizationCategoryDisplayName } from './platform';
+import { CORE_TENANT_MODULES, ORGANIZATION_CATEGORIES, missingTenantModuleDependencies, normalizeOrganizationCategory, organizationCategory, organizationCategoryDisplayName } from './platform';
 
 describe('generic organisation categories', () => {
   it('uses stable category keys without baking custom categories into tenant records', () => {
@@ -12,7 +12,9 @@ describe('generic organisation categories', () => {
   });
 
   it('keeps setup guidance consistent for navigation and provisioning', () => {
-    expect(organizationCategory('tuition_centre')).toMatchObject({ peopleLabel: 'Students', groupLabel: 'Batches' });
-    expect(organizationCategory('company')).toMatchObject({ peopleLabel: 'People', groupLabel: 'Departments and groups' });
+    expect(organizationCategory('tuition_centre')).toMatchObject({ personLabel: 'Student', peopleLabel: 'Students', groupLabel: 'Batches' });
+    expect(organizationCategory('company')).toMatchObject({ personLabel: 'Person', peopleLabel: 'People', groupLabel: 'Departments and groups' });
+    expect(organizationCategory('gym_fitness').suggestedModules).toContain('ATTENDANCE');
+    expect(missingTenantModuleDependencies([...CORE_TENANT_MODULES, 'ATTENDANCE'])).toEqual([]);
   });
 });

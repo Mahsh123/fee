@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ArrowRight, Check, MailCheck } from 'lucide-react';
 import { ApiError, apiRequest } from '../../lib/api';
@@ -14,8 +14,11 @@ export default function VerifyEmailChangePage() {
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
+  const verificationFragmentCaptured = useRef(false);
 
   useEffect(() => {
+    if (verificationFragmentCaptured.current) return;
+    verificationFragmentCaptured.current = true;
     const value = window.location.hash.slice(1);
     setToken(value);
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);

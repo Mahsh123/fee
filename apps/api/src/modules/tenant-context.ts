@@ -44,12 +44,15 @@ export class PublicTenantContextService {
     }
 
     const current = this.tenantContext.peek();
-    const [branding, settings, moduleAccess, tenant] = await this.tenantContext.run(
+    const { branding, settings, moduleAccess, tenant } = await this.tenantContext.run(
       { ...(current ?? { requestId: request.requestId ?? 'unknown' }), tenantId: host.tenantId, isPlatformAdmin: false },
       // Prisma returns a lazy thenable. Await it before leaving the tenant scope
       // so the tenant-scoped database extension sees the resolved host tenant.
-      async () => await Promise.all([
-        this.prisma.db.tenantBranding.findUnique({
+      // Keep these reads sequential for Neon’s bounded pool: this endpoint is
+      // called by every tenant landing/login view, including concurrently from
+      // initial page mounts.
+      async () => {
+        const branding = await this.prisma.db.tenantBranding.findUnique({
           where: { tenantId: host.tenantId },
           select: {
             organizationName: true,
@@ -61,14 +64,15 @@ export class PublicTenantContextService {
             landingDescription: true,
             landingActionLabel: true,
           },
-        }),
-        this.prisma.db.tenantSettings.findUnique({
+        });
+        const settings = await this.prisma.db.tenantSettings.findUnique({
           where: { tenantId: host.tenantId },
           select: { allowPublicRegistration: true, timezone: true },
-        }),
-        resolveTenantModuleAccess(this.prisma.db, host.tenantId),
-        this.prisma.db.tenant.findUnique({ where: { id: host.tenantId }, select: { organizationType: true } }),
-      ]),
+        });
+        const moduleAccess = await resolveTenantModuleAccess(this.prisma.db, host.tenantId);
+        const tenant = await this.prisma.db.tenant.findUnique({ where: { id: host.tenantId }, select: { organizationType: true } });
+        return { branding, settings, moduleAccess, tenant };
+      },
     );
 
     return {

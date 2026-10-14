@@ -38,6 +38,7 @@ import { PayerResponsibilitiesModule } from './modules/payer-responsibilities';
 import { TenantContextPublicModule } from './modules/tenant-context';
 import { TenantHostResolutionMiddleware } from './common/tenant-host';
 import { OrganizationModule } from './modules/organization';
+import { TenantPeopleModule } from './modules/people';
 
 /**
  * The application module graph.
@@ -95,6 +96,7 @@ import { OrganizationModule } from './modules/organization';
     PayerResponsibilitiesModule,
     TenantContextPublicModule,
     OrganizationModule,
+    TenantPeopleModule,
   ],
   providers: [
     RequestIdMiddleware,

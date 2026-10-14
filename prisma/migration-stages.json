@@ -27,6 +27,12 @@
           "schemaIndexName": "gateway_webhook_tenant_provider_event_key"
         }
       ]
+    },
+    {
+      "beforeMigration": "20261013000600_fee_assignment_cycle_composite_foreign_keys_add",
+      "indexes": [
+        "fee_demands_tenantId_cycleId_personId_key"
+      ]
     }
   ],
   "preIndexMigrations": [
@@ -66,7 +72,11 @@
     "20261006001300_user_invitation_token_index",
     "20261007000100_user_email_change_fields",
     "20261007000200_user_email_change_token_index",
-    "20261012000100_user_password_reset"
+    "20261012000100_user_password_reset",
+    "20261012000200_attendance",
+    "20261012000300_tenant_identity_guard_extensions",
+    "20261013000100_generic_tenant_people_fee_attendance",
+    "20261013000500_fee_assignment_cycles"
   ],
   "postIndexMigrations": [
     "20260930000100_tenant_composite_foreign_keys_add",
@@ -95,6 +105,12 @@
     "20261006000800_platform_tenant_provisioning_idempotency",
     "20261006001000_branch_finance_composite_foreign_keys_add",
     "20261006001100_branch_finance_composite_foreign_keys_validate",
-    "20261007000300_tenant_public_registration"
+    "20261007000300_tenant_public_registration",
+    "20261013000200_tenant_person_composite_foreign_keys_add",
+    "20261013000300_tenant_person_composite_foreign_keys_validate",
+    "20261013000400_tenant_person_identity_guard_extensions",
+    "20261013000600_fee_assignment_cycle_composite_foreign_keys_add",
+    "20261013000700_fee_assignment_cycle_composite_foreign_keys_validate",
+    "20261013000800_fee_assignment_cycle_identity_guards"
   ]
 }

@@ -2,8 +2,22 @@ import { describe, expect, it } from 'vitest';
 import { changePasswordSchema, createPaymentOrderSchema, loginSchema, manualPaymentSchema, refreshSchema, updateOwnProfileSchema } from './index';
 import { tenantBrandingUpdateSchema } from './tenant-operations';
 import { createPlanSchema, provisionTenantSchema, tenantSlugAvailabilitySchema, updatePlanSchema, updateTenantProfileSchema } from './platform';
+import { createFeeAssignmentSchema } from './fees';
 
 describe('shared validation contracts', () => {
+  it('requires selected people for direct fee assignment and accepts bounded explicit targets', () => {
+    const assignment = {
+      branchId: '11111111-1111-4111-8111-111111111111',
+      feeStructureId: '22222222-2222-4222-8222-222222222222',
+      feeStructureVersionId: '33333333-3333-4333-8333-333333333333',
+      targetType: 'STUDENT',
+      dueDateOverride: '2026-11-01',
+    };
+    expect(createFeeAssignmentSchema.safeParse(assignment).success).toBe(false);
+    expect(createFeeAssignmentSchema.safeParse({ ...assignment, targetStudentIds: ['44444444-4444-4444-8444-444444444444'] }).success).toBe(true);
+    expect(createFeeAssignmentSchema.safeParse({ ...assignment, targetStudentIds: Array.from({ length: 5001 }, () => '44444444-4444-4444-8444-444444444444') }).success).toBe(false);
+  });
+
   it('resolves login scope from the hostname and strips client tenant identity', () => {
     expect(loginSchema.safeParse({ email: 'payer@example.test', password: 'secret' }).success).toBe(true);
     const withSpoofedSlug = loginSchema.safeParse({ tenantSlug: 'other-school', email: 'payer@example.test', password: 'secret' });
@@ -77,5 +91,15 @@ describe('shared validation contracts', () => {
     expect(tenantSlugAvailabilitySchema.safeParse({ slug: 'platform' }).success).toBe(true);
     expect(updateTenantProfileSchema.safeParse({ organizationType: 'club_association' }).success).toBe(true);
     expect(updateTenantProfileSchema.safeParse({ organizationType: 'Community Centre' }).success).toBe(true);
+  });
+
+  it('allows a gym workspace to enable generic attendance without Education admissions', () => {
+    const core = ['USERS', 'BRANCHES', 'ORGANIZATION', 'ASSIGNMENTS', 'REPORTS', 'NOTIFICATIONS'];
+    const result = provisionTenantSchema.safeParse({
+      name: 'Northstar Fitness', organizationType: 'gym_fitness', enabledModules: [...core, 'ATTENDANCE'],
+      currency: 'INR', currencySymbol: '₹', currencyMinorUnits: 2, timezone: 'Asia/Kolkata', locale: 'en-IN',
+      tenantAdminEmail: 'owner@example.test', tenantAdminFirstName: 'Asha',
+    });
+    expect(result.success).toBe(true);
   });
 });

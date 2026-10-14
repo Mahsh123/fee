@@ -41,6 +41,8 @@ function createHarness() {
       Plan: { fields: [{ name: 'modules', kind: 'object' }, { name: 'entitlements', kind: 'object' }, { name: 'subscriptions', kind: 'object' }] },
       PlanModule: { fields: [{ name: 'plan', kind: 'object' }] },
       PlanEntitlement: { fields: [{ name: 'plan', kind: 'object' }] },
+      TenantProvisioningOperation: { fields: [{ name: 'actorId', kind: 'scalar' }, { name: 'idempotencyKey', kind: 'scalar' }, { name: 'createdTenantId', kind: 'scalar' }] },
+      AuditLog: { fields: [] },
       AuditSigningKey: { fields: [] },
       SchemaIndexBuild: { fields: [] },
     },
@@ -207,6 +209,41 @@ describe('tenant-scoped Prisma boundary', () => {
       await expect(run({ model: 'Plan', operation: 'create', args: { data: { key: 'team', modules: { create: [] }, entitlements: { create: [] } } } }))
         .resolves.toMatchObject({ data: { key: 'team', modules: { create: [] }, entitlements: { create: [] } } });
       await expect(run({ model: 'AuditSigningKey', operation: 'findMany', args: {} })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    });
+  });
+
+  it('permits provisioning-operation reads and writes only in a verified platform context without injecting tenantId', async () => {
+    const { context, run } = createHarness();
+    const findArgs = { where: { actorId_idempotencyKey: { actorId: 'platform-admin', idempotencyKey: 'retry-key' } } };
+    const createArgs = { data: { actorId: 'platform-admin', idempotencyKey: 'retry-key', result: {} } };
+
+    await expect(run({ model: 'TenantProvisioningOperation', operation: 'findUnique', args: findArgs }))
+      .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    await context.run({ tenantId: 'tenant-a', userId: 'tenant-user', requestId: 'provisioning-tenant-denied', isPlatformAdmin: false }, async () => {
+      await expect(run({ model: 'TenantProvisioningOperation', operation: 'findUnique', args: findArgs }))
+        .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    });
+    await context.run({ tenantId: 'platform', userId: 'platform-admin', requestId: 'provisioning-platform', isPlatformAdmin: true }, async () => {
+      await expect(run({ model: 'TenantProvisioningOperation', operation: 'findUnique', args: findArgs })).resolves.toEqual(findArgs);
+      await expect(run({ model: 'TenantProvisioningOperation', operation: 'create', args: createArgs })).resolves.toEqual(createArgs);
+    });
+  });
+
+  it('allows only the authenticated platform actor as creator during tenant bootstrap', async () => {
+    const { context, run } = createHarness();
+    await context.run({ tenantId: 'tenant-a', userId: 'platform-admin', requestId: 'tenant-bootstrap', isPlatformAdmin: true }, async () => {
+      await expect(run({ model: 'User', operation: 'create', args: { data: { createdBy: 'platform-admin' } } }))
+        .resolves.toMatchObject({ data: { createdBy: 'platform-admin', tenantId: 'tenant-a' } });
+      await expect(run({ model: 'User', operation: 'create', args: { data: { createdBy: 'other-platform-user' } } }))
+        .rejects.toMatchObject({ code: 'TENANT_MISMATCH' });
+      await expect(run({ model: 'AuditLog', operation: 'create', args: { data: { actorId: 'platform-admin' } } }))
+        .resolves.toMatchObject({ data: { actorId: 'platform-admin', tenantId: 'tenant-a' } });
+      await expect(run({ model: 'AuditLog', operation: 'create', args: { data: { actorId: 'other-platform-user' } } }))
+        .rejects.toMatchObject({ code: 'TENANT_MISMATCH' });
+    });
+    await context.run({ tenantId: 'tenant-a', userId: 'tenant-admin', requestId: 'tenant-user-create', isPlatformAdmin: false }, async () => {
+      await expect(run({ model: 'User', operation: 'create', args: { data: { createdBy: 'platform-admin' } } }))
+        .rejects.toMatchObject({ code: 'TENANT_MISMATCH' });
     });
   });
 
@@ -475,6 +512,12 @@ describe('tenant-scoped Prisma boundary', () => {
       await expect(
         run({ model: 'Tenant', operation: 'findFirst', args: { where: { id: 'tenant-a' }, select: { enabledModules: true } } }),
       ).resolves.toMatchObject({ where: { id: 'tenant-a' } });
+      await expect(
+        run({ model: 'Tenant', operation: 'findUnique', args: { where: { id: 'tenant-a' }, select: { organizationType: true } } }),
+      ).resolves.toMatchObject({ where: { id: 'tenant-a' } });
+      await expect(
+        run({ model: 'Tenant', operation: 'findUnique', args: { where: { id: 'tenant-a' }, select: { organizationType: true, enabledModules: true } } }),
+      ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
       await expect(
         run({ model: 'Tenant', operation: 'findFirst', args: { where: { id: 'tenant-b' }, select: { enabledModules: true } } }),
       ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });

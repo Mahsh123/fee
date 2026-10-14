@@ -28,6 +28,7 @@ export * from './access';
 export * from './academics';
 export * from './attendance';
 export * from './organization';
+export * from './people';
 export * from './tenant-operations';
 export * from './platform';
 export * from './sponsors';

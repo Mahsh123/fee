@@ -281,7 +281,7 @@ export interface RuleActionDefinition {
 // ---------------------------------------------------------------------------
 
 export interface RuleScopeDefinition {
-  targetType: 'STUDENT' | 'CLASS' | 'SECTION' | 'BATCH' | 'COURSE' | 'DEPARTMENT' | 'PROGRAM' | 'HOSTEL' | 'TRANSPORT_ROUTE' | 'CUSTOM_GROUP';
+  targetType: 'PERSON' | 'STUDENT' | 'CLASS' | 'SECTION' | 'BATCH' | 'COURSE' | 'DEPARTMENT' | 'PROGRAM' | 'HOSTEL' | 'TRANSPORT_ROUTE' | 'CUSTOM_GROUP';
   targetId?: string | null;
   /** Human label for the explain output, e.g. "Grade 10 (2026-27)". */
   targetLabel?: string | null;

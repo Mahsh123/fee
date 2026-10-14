@@ -33,6 +33,7 @@ export const ROLE_KEYS = [
   'REPORT_VIEWER',
   'STUDENT',
   'PARENT',
+  'WORKSPACE_PERSON',
 ] as const;
 export type RoleKey = (typeof ROLE_KEYS)[number];
 
@@ -270,6 +271,7 @@ export const MANUAL_PAYMENT_METHODS: readonly PaymentMethodKind[] = [
 
 export const PAYER_TYPES = [
   'STUDENT',
+  'MEMBER',
   'PARENT',
   'GUARDIAN',
   'SPONSOR',
@@ -353,10 +355,12 @@ export type LedgerAccountType = (typeof LEDGER_ACCOUNT_TYPES)[number];
  */
 export const SYSTEM_LEDGER_ACCOUNTS = {
   STUDENT_RECEIVABLE: { code: '1100', type: 'ASSET' as LedgerAccountType, name: 'Student Receivable' },
+  TENANT_PERSON_RECEIVABLE: { code: '1110', type: 'ASSET' as LedgerAccountType, name: 'Organisation Person Receivable' },
   GATEWAY_CLEARING: { code: '1200', type: 'ASSET' as LedgerAccountType, name: 'Gateway Clearing' },
   CASH_IN_HAND: { code: '1300', type: 'ASSET' as LedgerAccountType, name: 'Cash in Hand' },
   BANK_ACCOUNT: { code: '1400', type: 'ASSET' as LedgerAccountType, name: 'Bank Account' },
   STUDENT_CREDIT: { code: '2100', type: 'LIABILITY' as LedgerAccountType, name: 'Student Credit Balance' },
+  TENANT_PERSON_CREDIT: { code: '2110', type: 'LIABILITY' as LedgerAccountType, name: 'Organisation Person Credit Balance' },
   SPONSOR_PAYABLE: { code: '2200', type: 'LIABILITY' as LedgerAccountType, name: 'Sponsor Payable' },
   UNAPPLIED_GATEWAY_RECEIPTS: { code: '2500', type: 'LIABILITY' as LedgerAccountType, name: 'Unapplied Gateway Receipts' },
   FEE_INCOME: { code: '4000', type: 'INCOME' as LedgerAccountType, name: 'Fee Income' },
@@ -391,6 +395,7 @@ export const ACADEMIC_UNIT_TYPES = [
 export type AcademicUnitType = (typeof ACADEMIC_UNIT_TYPES)[number];
 
 export const ASSIGNMENT_TARGET_TYPES = [
+  'PERSON',
   'STUDENT',
   'CLASS',
   'SECTION',

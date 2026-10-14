@@ -43,7 +43,7 @@ export function validateFeeCalculationConfig(method: FeeCalculationMethod, input
   }
   if (method === 'USAGE') {
     if (input.kind !== 'USAGE' || typeof input.quantityPath !== 'string' || !isAllowedFactPath(input.quantityPath)) {
-      throw new FeeBaseCalculationError('Choose a supported numeric student or history field for the usage quantity.');
+      throw new FeeBaseCalculationError('Choose a supported numeric fee, profile, or history field for the usage quantity.');
     }
     return { schemaVersion: 1, kind: 'USAGE', quantityPath: input.quantityPath };
   }
@@ -85,7 +85,7 @@ export function calculateBaseAmount(input: CalculateBaseAmountInput): FeeBaseCal
     case 'USAGE': {
       const usage = config as Extract<FeeCalculationConfig, { kind: 'USAGE' }>;
       const quantity = resolveNumericFact(input.context, usage.quantityPath);
-      resolvedInputs[usage.quantityPath] = quantity.toString();
+      resolvedInputs[usage.quantityPath] = Money.fromUnits(quantity, input.currency).toString();
       resolvedInputs['fee.amount'] = input.amount;
       units = checked(divRound(parseAmount(input.amount, input.currency) * quantity, MONEY_UNITS_PER_MAJOR));
       break;
@@ -228,10 +228,10 @@ function resolveNumericFact(context: FeeContext, path: string): bigint {
   if (!isAllowedFactPath(path)) throw new FeeBaseCalculationError(`The calculation field “${path}” is not available.`);
   let value: unknown = context;
   for (const part of path.split('.')) {
-    if (!isRecord(value) || !Object.hasOwn(value, part)) throw new FeeBaseCalculationError(`The calculation field “${path}” is not available for this student.`);
+    if (!isRecord(value) || !Object.hasOwn(value, part)) throw new FeeBaseCalculationError(`The calculation field “${path}” is not available for this person.`);
     value = value[part];
   }
-  if (typeof value !== 'string' && typeof value !== 'number') throw new FeeBaseCalculationError(`The calculation field “${path}” has no numeric value for this student.`);
+  if (typeof value !== 'string' && typeof value !== 'number') throw new FeeBaseCalculationError(`The calculation field “${path}” has no numeric value for this person.`);
   return parseNumeric(String(value), path);
 }
 

@@ -141,6 +141,28 @@ describe('JwtAuthGuard tenant binding', () => {
     });
     expect(tenantLookup).toHaveBeenCalledWith({ where: { slug: 'fee-platform' }, select: { id: true } });
   });
+
+  it('reuses the reserved platform tenant ID across authenticated platform requests', async () => {
+    const tenantContext = new TenantContextService();
+    const reflector = { getAllAndOverride: () => false };
+    const tokens = {
+      verifyAccessToken: vi.fn().mockResolvedValue({
+        sub: 'super-admin', tid: 'platform-tenant', email: 'admin@example.test', roles: ['PLATFORM_ADMIN'], perms: [], platform: true, typ: 'access',
+      }),
+    };
+    const tenantLookup = vi.fn(async () => ({ id: 'platform-tenant' }));
+    const guard = new JwtAuthGuard(reflector as never, tokens as never, tenantContext, { db: { tenant: { findUnique: tenantLookup } } } as never);
+    const host = { kind: 'platform' as const, hostname: 'platform.localhost', baseDomain: 'localhost' };
+
+    for (const requestId of ['platform-cache-first', 'platform-cache-second']) {
+      const request = { headers: { authorization: 'Bearer platform-token' }, tenantHost: host };
+      await tenantContext.run({ requestId, tenantHost: host }, async () => {
+        await expect(guard.canActivate(executionContext(request))).resolves.toBe(true);
+      });
+    }
+
+    expect(tenantLookup).toHaveBeenCalledOnce();
+  });
 });
 
 describe('PlatformAdminGuard', () => {
@@ -161,6 +183,21 @@ describe('PlatformAdminGuard', () => {
   it('rejects a tenant role even when the request claims the platform role', async () => {
     await expect(guard.canActivate(executionContext({ user: { id: 'user-1', tenantId: 'tenant-1', isPlatformAdmin: false, roles: ['PLATFORM_ADMIN'] } })))
       .rejects.toThrow(/Super administrator access is required/);
+  });
+
+  it('coalesces simultaneous session checks for the same platform operator', async () => {
+    const userFindFirst = vi.fn().mockResolvedValue({ status: 'ACTIVE', sessionVersion: 3 });
+    const context = new TenantContextService();
+    const platformGuard = new PlatformAdminGuard({ db: { user: { findFirst: userFindFirst } } } as never, context);
+    const execution = executionContext({ user: { id: 'operator-a', tenantId: 'platform-tenant', sessionVersion: 3, isPlatformAdmin: true, roles: ['PLATFORM_ADMIN'] } });
+
+    await Promise.all([
+      platformGuard.canActivate(execution),
+      platformGuard.canActivate(execution),
+      platformGuard.canActivate(execution),
+    ]);
+
+    expect(userFindFirst).toHaveBeenCalledOnce();
   });
 });
 

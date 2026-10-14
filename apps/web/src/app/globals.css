@@ -554,6 +554,17 @@ td small, .table-subtext { display: block; margin-top: 4px; color: #8a96a8; font
 .assignment-form label, .filter-label { display: grid; gap: 6px; color: #58677e; font-size: 10px; font-weight: 600; }
 .assignment-form input, .assignment-form select, .filter-label select { width: 100%; min-height: 37px; padding: 8px 10px; color: #26354c; background: #fff; border: 1px solid #dce3ec; border-radius: 6px; outline: 0; font-size: 11px; }
 .assignment-form input:focus, .assignment-form select:focus, .filter-label select:focus { border-color: #047857; box-shadow: 0 0 0 3px #0478571a; }
+.student-assignment-picker { grid-column: 1 / -1; display: grid; gap: 9px; padding: 13px; border: 1px solid #e5e9ee; border-radius: 8px; background: #fbfcfb; }
+.student-assignment-picker > label { max-width: 520px; }
+.student-assignment-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 7px; max-height: 220px; overflow: auto; }
+.assignment-form .student-assignment-option { display: flex; grid-template-columns: auto 1fr; align-items: center; gap: 9px; padding: 9px; border: 1px solid #e5e9ee; border-radius: 7px; background: #fff; cursor: pointer; }
+.assignment-form .student-assignment-option input { width: 16px; min-height: 16px; margin: 0; accent-color: #047857; }
+.student-assignment-option span { display: grid; gap: 3px; }
+.student-assignment-option strong { color: #171717; font-size: 11px; }
+.student-assignment-option small { color: #788397; font-size: 10px; }
+.selected-student-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.selected-student-list > span { display: inline-flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid #d7eee3; border-radius: 999px; background: #ecfdf5; color: #064e3b; font-size: 10px; }
+.student-assignment-picker .notice-error { margin: 0; }
 .assignment-submit { display: flex; align-items: flex-end; }
 .assignment-submit .button { min-height: 37px; }
 .assignment-list-panel { min-height: 230px; }
@@ -769,6 +780,26 @@ td small, .table-subtext { display: block; margin-top: 4px; color: #8a96a8; font
 .user-import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .import-file-button { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .import-file-button input { display: none; }
+
+.people-directory-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+.people-directory-filters > label { display: grid; gap: 6px; min-width: 190px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.people-directory-filters .search-field { display: flex; align-items: center; gap: 8px; min-width: min(420px, 100%); padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); }
+.people-directory-filters .search-field input { min-height: 40px; padding: 0; border: 0; outline: 0; }
+.table-row-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.people-import-panel { margin-top: 18px; }
+.people-modal-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 20px; background: rgb(17 24 39 / 38%); }
+.people-editor { width: min(760px, 100%); max-height: min(90vh, 860px); overflow: auto; padding: 22px; box-shadow: 0 18px 60px rgb(0 0 0 / 16%); }
+.people-editor-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
+.people-editor-form > label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.people-editor-form input, .people-editor-form select, .people-directory-filters select { min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: #171717; font: inherit; }
+.fee-cycle-editor { width: min(1180px, 100%); }
+.fee-cycle-editor .people-editor-form > :is(.assignment-form, .table-wrap, .section-heading, .notice, .muted) { grid-column: 1 / -1; }
+.fee-cycle-editor .people-editor-form > .assignment-form { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); align-items: end; gap: 12px; }
+.fee-cycle-editor .people-editor-form > .assignment-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.fee-cycle-editor .table-wrap { max-height: min(42vh, 480px); }
+.fee-cycle-editor .table-wrap input { min-width: 110px; min-height: 36px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 7px; font: inherit; }
+.people-editor-actions { display: flex; justify-content: flex-end; gap: 8px; grid-column: 1 / -1; padding-top: 8px; }
+@media (max-width: 640px) { .people-editor-form { grid-template-columns: 1fr; } .fee-cycle-editor .people-editor-form > .assignment-form { grid-template-columns: 1fr; } .people-directory-filters > label, .people-directory-filters .search-field { width: 100%; min-width: 0; } }
 .user-import-filename { margin: 0; color: #52627a; font-size: 11px; }
 .user-import-preview { max-height: 340px; }
 .user-import-preview table { min-width: 700px; }
@@ -782,6 +813,24 @@ td small, .table-subtext { display: block; margin-top: 4px; color: #8a96a8; font
 .user-action-cell { min-width: 115px; }
 .user-action-cell .button-small { margin: 2px; }
 .user-import-panel code { color: #064e3b; background: #ecfdf5; padding: 1px 4px; border-radius: 3px; }
+.attendance-filter-panel, .attendance-roster-panel { display: grid; gap: 14px; margin-bottom: 14px; }
+.attendance-filter-form { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)) auto; align-items: end; gap: 10px; }
+.attendance-filter-form > label { display: grid; min-width: 0; gap: 5px; color: #52627a; font-size: 11px; font-weight: 600; }
+.attendance-filter-form input, .attendance-filter-form select, .attendance-table-wrap select, .attendance-table-wrap input { width: 100%; min-height: 38px; padding: 8px 9px; border: 1px solid #eaeaea; border-radius: 7px; color: #171717; background: #fff; font: inherit; }
+.attendance-filter-form input:focus, .attendance-filter-form select:focus, .attendance-table-wrap select:focus, .attendance-table-wrap input:focus { border-color: #047857; outline: 3px solid #ecfdf5; }
+.attendance-filter-form .button { min-height: 38px; white-space: nowrap; }
+.attendance-summary { display: flex; flex-wrap: wrap; gap: 8px; }
+.attendance-setup-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.attendance-summary span { display: inline-flex; align-items: center; gap: 5px; padding: 7px 10px; border: 1px solid #eaeaea; border-radius: 8px; color: #52627a; background: #fff; font-size: 11px; text-transform: capitalize; }
+.attendance-summary strong { color: #064e3b; }
+.attendance-table-wrap { max-height: min(62vh, 680px); }
+.attendance-table-wrap table { min-width: 640px; }
+.attendance-table-wrap th:first-child { min-width: 220px; }
+.attendance-table-wrap th:nth-child(2) { min-width: 150px; }
+.attendance-table-wrap td { vertical-align: middle; }
+.attendance-table-wrap .table-subtext { display: block; margin-top: 3px; }
+@media (max-width: 900px) { .attendance-filter-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .attendance-filter-form { grid-template-columns: 1fr; } .attendance-filter-form .button { width: 100%; justify-content: center; } .attendance-summary { gap: 6px; } .attendance-summary span { padding: 6px 8px; font-size: 10px; } }
 .installment-page-panel { margin-top: 14px; }
 .gateway-layout { display: grid; grid-template-columns: minmax(330px, .8fr) minmax(440px, 1.2fr); align-items: start; gap: 14px; }
 .gateway-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }

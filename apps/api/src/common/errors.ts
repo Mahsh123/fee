@@ -264,14 +264,15 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     if (exception instanceof AppError) return exception;
 
     if (exception instanceof ZodError) {
+      const details = exception.issues.map((issue) => ({
+        path: issue.path.join('.') || '(body)',
+        message: issue.message,
+        code: issue.code,
+      }));
       return new AppError({
         code: ERROR_CODES.VALIDATION_FAILED,
-        message: 'The request payload is invalid.',
-        details: exception.issues.map((issue) => ({
-          path: issue.path.join('.'),
-          message: issue.message,
-          code: issue.code,
-        })),
+        message: `The request payload is invalid: ${details.map((issue) => `${issue.path}: ${issue.message}`).join('; ')}`,
+        details,
       });
     }
 

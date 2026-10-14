@@ -1,9 +1,9 @@
 # Wasl Madrasa mobile app
 
 This Flutter client uses the Wasl API already in this repository. It does not
-connect to PostgreSQL or contain tenant data. Sign-in is tenant-host scoped:
-enter the Madrasa workspace URL, then use the email and password registered in
-that workspace. The API verifies tenant membership and role permissions.
+connect to PostgreSQL or contain tenant data. Each branded app build is pinned
+to one tenant workspace; users sign in with the email and password registered
+for that Madrasa. The API verifies tenant membership and role permissions.
 
 ## Run
 
@@ -14,13 +14,20 @@ flutter pub get
 flutter run
 ```
 
+Development defaults to the seeded tenant at `http://demo.localhost:8080`.
+When running on a USB-connected Android phone against the local Compose stack,
+forward the development server port once before launching:
+
+```powershell
+adb reverse tcp:8080 tcp:8080
+flutter run
+```
+
 For a deployment where mobile workspace URLs use a separate API host, provide
 the API origin with `--dart-define=WASL_API_BASE_URL=https://api.example.org`.
-To prefill a workspace at build time, use
-`--dart-define=WASL_WORKSPACE_URL=https://north.example.org`.
-The entered workspace URL remains the tenant-resolving hostname and is sent in
-the `Host` header. In the normal Wasl deployment, enter the tenant workspace
-URL, which also routes API requests.
+To build a customer-specific app, set its workspace at build time, for example
+`--dart-define=WASL_WORKSPACE_URL=https://north.example.org`. This changes the
+tenant resolved by the app without adding a workspace URL field to login.
 
 ## Checks and Android build
 

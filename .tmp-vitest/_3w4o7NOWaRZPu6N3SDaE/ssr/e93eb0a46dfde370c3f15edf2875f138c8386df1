@@ -1,0 +1,49 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    };
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __exportStar = (this && this.__exportStar) || function(m, exports) {
+    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.changePasswordSchema = exports.refreshSchema = exports.loginSchema = void 0;
+const zod_1 = require("zod");
+/** Shared request/form schemas. These contracts validate input without owning transport behavior. */
+exports.loginSchema = zod_1.z.object({
+    email: zod_1.z.string().email('A valid email address is required.'),
+    password: zod_1.z.string().min(1, 'The password is required.').max(200),
+});
+exports.refreshSchema = zod_1.z.object({
+    refreshToken: zod_1.z.string().min(10, 'A refresh token is required.').optional(),
+});
+exports.changePasswordSchema = zod_1.z.object({
+    currentPassword: zod_1.z.string().min(1),
+    newPassword: zod_1.z.string().min(12, 'Choose a password of at least 12 characters.').max(200),
+});
+__exportStar(require("./students"), exports);
+__exportStar(require("./fees"), exports);
+__exportStar(require("./payments"), exports);
+__exportStar(require("./gateways"), exports);
+__exportStar(require("./settings"), exports);
+__exportStar(require("./access"), exports);
+__exportStar(require("./academics"), exports);
+__exportStar(require("./attendance"), exports);
+__exportStar(require("./organization"), exports);
+__exportStar(require("./tenant-operations"), exports);
+__exportStar(require("./platform"), exports);
+__exportStar(require("./sponsors"), exports);
+__exportStar(require("./adjustments"), exports);
+__exportStar(require("./benefits"), exports);
+__exportStar(require("./payer-responsibilities"), exports);
+//# sourceMappingSource=vite-generated
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUEsQ0FBQTs7Ozs7Ozs7Ozs7Ozs7Ozs7QUFBQTtBQUVBO0FBQ2EsbUJBQVcsR0FBRyxPQUFDLENBQUMsTUFBTSxDQUFDO0lBQ2xDLEtBQUssRUFBRSxPQUFDLENBQUMsTUFBTSxFQUFFLENBQUMsS0FBSyxDQUFDLG9DQUFvQyxDQUFDO0lBQzdELFFBQVEsRUFBRSxPQUFDLENBQUMsTUFBTSxFQUFFLENBQUMsR0FBRyxDQUFDLENBQUMsRUFBRSwyQkFBMkIsQ0FBQyxDQUFDLEdBQUcsQ0FBQyxHQUFHLENBQUM7Q0FDbEUsQ0FBQztBQUVXLHFCQUFhLEdBQUcsT0FBQyxDQUFDLE1BQU0sQ0FBQztJQUNwQyxZQUFZLEVBQUUsT0FBQyxDQUFDLE1BQU0sRUFBRSxDQUFDLEdBQUcsQ0FBQyxFQUFFLEVBQUUsOEJBQThCLENBQUMsQ0FBQyxRQUFRLEVBQUU7Q0FDNUUsQ0FBQztBQUVXLDRCQUFvQixHQUFHLE9BQUMsQ0FBQyxNQUFNLENBQUM7SUFDM0MsZUFBZSxFQUFFLE9BQUMsQ0FBQyxNQUFNLEVBQUUsQ0FBQyxHQUFHLENBQUMsQ0FBQyxDQUFDO0lBQ2xDLFdBQVcsRUFBRSxPQUFDLENBQUMsTUFBTSxFQUFFLENBQUMsR0FBRyxDQUFDLEVBQUUsRUFBRSw4Q0FBOEMsQ0FBQyxDQUFDLEdBQUcsQ0FBQyxHQUFHLENBQUM7Q0FDekYsQ0FBQztBQU1GO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiLi4vc3JjL2luZGV4LnRzIl0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IHogfSBmcm9tICd6b2QnO1xuXG4vKiogU2hhcmVkIHJlcXVlc3QvZm9ybSBzY2hlbWFzLiBUaGVzZSBjb250cmFjdHMgdmFsaWRhdGUgaW5wdXQgd2l0aG91dCBvd25pbmcgdHJhbnNwb3J0IGJlaGF2aW9yLiAqL1xuZXhwb3J0IGNvbnN0IGxvZ2luU2NoZW1hID0gei5vYmplY3Qoe1xuICBlbWFpbDogei5zdHJpbmcoKS5lbWFpbCgnQSB2YWxpZCBlbWFpbCBhZGRyZXNzIGlzIHJlcXVpcmVkLicpLFxuICBwYXNzd29yZDogei5zdHJpbmcoKS5taW4oMSwgJ1RoZSBwYXNzd29yZCBpcyByZXF1aXJlZC4nKS5tYXgoMjAwKSxcbn0pO1xuXG5leHBvcnQgY29uc3QgcmVmcmVzaFNjaGVtYSA9IHoub2JqZWN0KHtcbiAgcmVmcmVzaFRva2VuOiB6LnN0cmluZygpLm1pbigxMCwgJ0EgcmVmcmVzaCB0b2tlbiBpcyByZXF1aXJlZC4nKS5vcHRpb25hbCgpLFxufSk7XG5cbmV4cG9ydCBjb25zdCBjaGFuZ2VQYXNzd29yZFNjaGVtYSA9IHoub2JqZWN0KHtcbiAgY3VycmVudFBhc3N3b3JkOiB6LnN0cmluZygpLm1pbigxKSxcbiAgbmV3UGFzc3dvcmQ6IHouc3RyaW5nKCkubWluKDEyLCAnQ2hvb3NlIGEgcGFzc3dvcmQgb2YgYXQgbGVhc3QgMTIgY2hhcmFjdGVycy4nKS5tYXgoMjAwKSxcbn0pO1xuXG5leHBvcnQgdHlwZSBMb2dpbklucHV0ID0gei5pbmZlcjx0eXBlb2YgbG9naW5TY2hlbWE+O1xuZXhwb3J0IHR5cGUgUmVmcmVzaElucHV0ID0gei5pbmZlcjx0eXBlb2YgcmVmcmVzaFNjaGVtYT47XG5leHBvcnQgdHlwZSBDaGFuZ2VQYXNzd29yZElucHV0ID0gei5pbmZlcjx0eXBlb2YgY2hhbmdlUGFzc3dvcmRTY2hlbWE+O1xuXG5leHBvcnQgKiBmcm9tICcuL3N0dWRlbnRzJztcbmV4cG9ydCAqIGZyb20gJy4vZmVlcyc7XG5leHBvcnQgKiBmcm9tICcuL3BheW1lbnRzJztcbmV4cG9ydCAqIGZyb20gJy4vZ2F0ZXdheXMnO1xuZXhwb3J0ICogZnJvbSAnLi9zZXR0aW5ncyc7XG5leHBvcnQgKiBmcm9tICcuL2FjY2Vzcyc7XG5leHBvcnQgKiBmcm9tICcuL2FjYWRlbWljcyc7XG5leHBvcnQgKiBmcm9tICcuL2F0dGVuZGFuY2UnO1xuZXhwb3J0ICogZnJvbSAnLi9vcmdhbml6YXRpb24nO1xuZXhwb3J0ICogZnJvbSAnLi90ZW5hbnQtb3BlcmF0aW9ucyc7XG5leHBvcnQgKiBmcm9tICcuL3BsYXRmb3JtJztcbmV4cG9ydCAqIGZyb20gJy4vc3BvbnNvcnMnO1xuZXhwb3J0ICogZnJvbSAnLi9hZGp1c3RtZW50cyc7XG5leHBvcnQgKiBmcm9tICcuL2JlbmVmaXRzJztcbmV4cG9ydCAqIGZyb20gJy4vcGF5ZXItcmVzcG9uc2liaWxpdGllcyc7XG4iXSwiZmlsZSI6Ii9AZnMvRDovZmVlL3BhY2thZ2VzL3ZhbGlkYXRpb24vZGlzdC9pbmRleC5qcyJ9
+
+//# vitestCache=W3siZmlsZSI6IjEiLCJpZCI6IjEiLCJ1cmwiOiIyIiwiaW1wb3J0ZWRVcmxzIjoiMyIsIm1hcHBpbmdzIjpmYWxzZSwiZGVwcyI6IjQiLCJkeW5hbWljRGVwcyI6IjUiLCJzdGF0aWNNb2NrcyI6bnVsbH0sIkQ6L2ZlZS9wYWNrYWdlcy92YWxpZGF0aW9uL2Rpc3QvaW5kZXguanMiLCIvQGZzL0Q6L2ZlZS9wYWNrYWdlcy92YWxpZGF0aW9uL2Rpc3QvaW5kZXguanMiLFtdLFtdLFtdXQ==

@@ -21,12 +21,15 @@ export class InvoicesService {
   async list(tenantId: string, query: Record<string, unknown>) {
     this.assertTenant(tenantId);
     const studentId = typeof query.studentId === 'string' ? query.studentId : undefined;
+    const personId = typeof query.personId === 'string' ? query.personId : undefined;
     if (studentId && !isUuid(studentId)) throw AppError.validation('The student ID must be a valid identifier.');
+    if (personId && !isUuid(personId)) throw AppError.validation('The person ID must be a valid identifier.');
+    if (studentId && personId) throw AppError.validation('Filter invoices by one person identity at a time.');
     const take = Math.min(Math.max(Number(query.pageSize) || 50, 1), 100);
     return this.prisma.db.invoice.findMany({
-      where: { tenantId, ...(studentId ? { studentId } : {}) },
+      where: { tenantId, ...(studentId ? { studentId } : {}), ...(personId ? { personId } : {}) },
       orderBy: [{ issueDate: 'desc' }, { createdAt: 'desc' }], take,
-      select: { id: true, invoiceNumber: true, studentId: true, demandId: true, status: true, issueDate: true, dueDate: true, totalAmount: true, adjustmentAmount: true, paidAmount: true, currency: true },
+      select: { id: true, invoiceNumber: true, studentId: true, personId: true, demandId: true, status: true, issueDate: true, dueDate: true, totalAmount: true, adjustmentAmount: true, paidAmount: true, currency: true },
     });
   }
 
@@ -38,7 +41,7 @@ export class InvoicesService {
     const [lines, demand, operationalAdjustments] = await Promise.all([
       this.prisma.db.invoiceLine.findMany({ where: { tenantId, invoiceId: invoice.id }, orderBy: { sequence: 'asc' } }),
       invoice.demandId
-        ? this.prisma.db.feeDemand.findFirst({ where: { tenantId, id: invoice.demandId }, select: { id: true, demandNumber: true, studentId: true, financialPeriod: true } })
+        ? this.prisma.db.feeDemand.findFirst({ where: { tenantId, id: invoice.demandId }, select: { id: true, demandNumber: true, studentId: true, personId: true, financialPeriod: true } })
         : Promise.resolve(null),
       invoice.demandId
         ? this.prisma.db.adjustment.findMany({ where: { tenantId, demandId: invoice.demandId, status: { in: ['APPLIED', 'REVERSED'] } }, orderBy: { createdAt: 'asc' } })
@@ -54,11 +57,11 @@ export class InvoicesService {
     return this.prisma.transactionWithRetry(async (tx) => {
       const demand = await tx.feeDemand.findFirst({ where: { tenantId, id: demandId } });
       if (!demand) throw AppError.notFound('Fee demand');
-      const invoiceStudent = await tx.student.findFirst({
-        where: { tenantId, id: demand.studentId },
-        select: { id: true, admissionNumber: true, firstName: true, middleName: true, lastName: true, email: true, phone: true },
-      });
-      if (!invoiceStudent) throw AppError.conflict('INVOICE_DEMAND_STUDENT_MISSING', 'The fee demand has no available student identity for its invoice snapshot.');
+      const [invoiceStudent, invoicePerson] = await Promise.all([
+        demand.studentId ? tx.student.findFirst({ where: { tenantId, id: demand.studentId }, select: { id: true, admissionNumber: true, firstName: true, middleName: true, lastName: true, email: true, phone: true } }) : Promise.resolve(null),
+        demand.personId ? tx.tenantPerson.findFirst({ where: { tenantId, id: demand.personId, deletedAt: null }, select: { id: true, personNumber: true, typeLabel: true, firstName: true, middleName: true, lastName: true, email: true, phone: true } }) : Promise.resolve(null),
+      ]);
+      if (!invoiceStudent && !invoicePerson) throw AppError.conflict('INVOICE_DEMAND_PERSON_MISSING', 'The fee demand has no available person identity for its invoice snapshot.');
       const existing = await tx.invoice.findFirst({ where: { tenantId, demandId } });
       if (existing) return { ...existing, lines: await tx.invoiceLine.findMany({ where: { tenantId, invoiceId: existing.id }, orderBy: { sequence: 'asc' } }), alreadyExisted: true };
       if (demand.status === 'DRAFT' || demand.status === 'CANCELLED' || demand.status === 'CREDITED') throw AppError.conflict('INVOICE_DEMAND_NOT_ISSUED', 'An invoice can be created only for an issued fee demand with a positive balance.');
@@ -88,7 +91,8 @@ export class InvoicesService {
       const snapshot = {
         invoiceNumber,
         organization: branding ?? (tenantIdentity ? { organizationName: tenantIdentity.name } : null),
-        student: { ...invoiceStudent, fullName: [invoiceStudent.firstName, invoiceStudent.middleName, invoiceStudent.lastName].filter(Boolean).join(' ') },
+        ...(invoiceStudent ? { student: { ...invoiceStudent, fullName: [invoiceStudent.firstName, invoiceStudent.middleName, invoiceStudent.lastName].filter(Boolean).join(' ') } } : {}),
+        ...(invoicePerson ? { person: { ...invoicePerson, fullName: [invoicePerson.firstName, invoicePerson.middleName, invoicePerson.lastName].filter(Boolean).join(' ') } } : {}),
         dates: { issueDate: demand.issueDate.toISOString().slice(0, 10), dueDate: demand.dueDate.toISOString().slice(0, 10) },
         source: { demandId: demand.id, demandNumber: demand.demandNumber, financialPeriod: demand.financialPeriod },
         totals: { subtotal: total.toString(), discountAmount: '0.0000', taxAmount: '0.0000', totalAmount: total.toString(), currency: demand.currency },
@@ -97,7 +101,7 @@ export class InvoicesService {
         items: demandItems.map((item) => ({ feeTypeCode: item.feeTypeCode, feeTypeName: item.feeTypeName, baseAmount: item.baseAmount.toString(), netAmount: Money.fromString(item.netAmount.toString(), demand.currency).add(Money.fromString(item.adjustmentAmount.toString(), demand.currency)).toString(), adjustments: (adjustmentsByItem.get(item.id) ?? []).map((row) => ({ direction: row.direction, stage: row.stage, label: row.label, amount: row.amount.toString(), reason: row.reason })) })),
       };
       const invoice = await tx.invoice.create({ data: {
-        tenantId, branchId: demand.branchId, invoiceNumber, studentId: demand.studentId, demandId: demand.id, status,
+        tenantId, branchId: demand.branchId, invoiceNumber, studentId: demand.studentId, personId: demand.personId, demandId: demand.id, status,
         issueDate: demand.issueDate, dueDate: demand.dueDate,
         subtotal: total.toString(), discountAmount: '0.0000', taxAmount: '0.0000', totalAmount: total.toString(), paidAmount: paid.toString(), currency: demand.currency,
         snapshot: snapshot as unknown as Prisma.InputJsonValue, notes: `Generated from fee demand ${demand.demandNumber}`,
@@ -105,7 +109,7 @@ export class InvoicesService {
       } });
       await tx.invoiceLine.createMany({ data: lines.map((line) => ({ tenantId, invoiceId: invoice.id, ...line })) });
       await this.audit.record(tx, { tenantId, actorId, action: 'INVOICE_ISSUED', entityType: 'Invoice', entityId: invoice.id, after: { invoiceNumber, demandId: demand.id, demandNumber: demand.demandNumber, totalAmount: total.toString(), currency: demand.currency, status } });
-      await this.outbox.publish(tx, { tenantId, eventType: 'INVOICE_ISSUED', aggregateType: 'Invoice', aggregateId: invoice.id, payload: { invoiceId: invoice.id, invoiceNumber, studentId: demand.studentId, demandId: demand.id, totalAmount: total.toString(), currency: demand.currency }, actorId, requestId: this.tenantContext.requestId });
+      await this.outbox.publish(tx, { tenantId, eventType: 'INVOICE_ISSUED', aggregateType: 'Invoice', aggregateId: invoice.id, payload: { invoiceId: invoice.id, invoiceNumber, studentId: demand.studentId, personId: demand.personId, demandId: demand.id, totalAmount: total.toString(), currency: demand.currency }, actorId, requestId: this.tenantContext.requestId });
       return { ...invoice, lines, alreadyExisted: false };
     });
   }

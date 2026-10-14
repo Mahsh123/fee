@@ -1,7 +1,7 @@
 'use client';
 import { formatIndianDate, formatIndianDateTime } from '../../lib/locale';
 
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { enumLabel } from '@fee/types';
 import { ApiError, apiRequest, type SessionUser } from '../../lib/api';
 import { buildImportPreview } from '../../lib/user-import';
@@ -17,7 +17,7 @@ interface UserRow {
   branches: Array<{ id: string; code: string; name: string; isPrimary: boolean }>;
   organizationUnits: Array<{ id: string; code: string; name: string; unitType: string }>;
 }
-interface PortalSubjects { students: Array<{ id: string; admissionNumber: string; firstName: string; middleName: string | null; lastName: string | null }>; guardians: Array<{ id: string; firstName: string; lastName: string | null; email: string | null; phone: string | null }> }
+interface PortalSubjects { students: Array<{ id: string; admissionNumber: string; firstName: string; middleName: string | null; lastName: string | null }>; guardians: Array<{ id: string; firstName: string; lastName: string | null; email: string | null; phone: string | null }>; persons: Array<{ id: string; personNumber: string; typeLabel: string; firstName: string; middleName: string | null; lastName: string | null; email: string | null; branchId: string | null }> }
 interface Branch { id: string; code: string; name: string; status: string }
 interface OrganizationUnit { id: string; code: string; name: string; unitType: string; active: boolean }
 interface PageResult<T> { items: T[]; pagination: { total: number } }
@@ -28,7 +28,7 @@ export default function AccessPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [permissionGroups, setPermissionGroups] = useState<PermissionGroup[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
-  const [portalSubjects, setPortalSubjects] = useState<PortalSubjects>({ students: [], guardians: [] });
+  const [portalSubjects, setPortalSubjects] = useState<PortalSubjects>({ students: [], guardians: [], persons: [] });
   const [branches, setBranches] = useState<Branch[]>([]);
   const [organizationUnits, setOrganizationUnits] = useState<OrganizationUnit[]>([]);
   const [createRoleIds, setCreateRoleIds] = useState<string[]>([]);
@@ -45,6 +45,9 @@ export default function AccessPage() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const hasLoadedRef = useRef(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [initialLoadFailed, setInitialLoadFailed] = useState(false);
   const canReadUsers = hasPermission(user, 'user.read');
   const canCreateUsers = hasPermission(user, 'user.create') && hasPermission(user, 'role.assign');
   const canDisableUsers = hasPermission(user, 'user.disable');
@@ -58,13 +61,15 @@ export default function AccessPage() {
   const canManageOrganizationUnitScope = canManageTenantRoles && hasPermission(user, 'organization.unit.manage');
 
   const load = useCallback(async () => {
+    const isInitialLoad = !hasLoadedRef.current;
+    if (isInitialLoad) { setInitialLoading(true); setInitialLoadFailed(false); }
     setError('');
     try {
       const [userPage, roleRows, catalog, subjects, branchPage, unitPage] = await Promise.all([
         canReadUsers ? apiRequest<PageResult<UserRow>>('/access/users?pageSize=200') : Promise.resolve({ items: [], pagination: { total: 0 } }),
         canReadRoles ? apiRequest<Role[]>('/access/roles') : Promise.resolve([]),
         canReadPermissions ? apiRequest<{ groups: PermissionGroup[]; permissions: Permission[] }>('/access/permissions') : Promise.resolve({ groups: [], permissions: [] }),
-        canCreateUsers ? apiRequest<PortalSubjects>('/access/portal-subjects') : Promise.resolve({ students: [], guardians: [] } as PortalSubjects),
+        canCreateUsers ? apiRequest<PortalSubjects>('/access/portal-subjects') : Promise.resolve({ students: [], guardians: [], persons: [] } as PortalSubjects),
         canReadBranches ? apiRequest<PageResult<Branch>>('/branches?pageSize=200&status=ACTIVE') : Promise.resolve({ items: [], pagination: { total: 0 } }),
         canReadOrganizationUnits ? apiRequest<PageResult<OrganizationUnit>>('/organization-units?pageSize=200') : Promise.resolve({ items: [], pagination: { total: 0 } }),
       ]);
@@ -77,7 +82,13 @@ export default function AccessPage() {
       setSelectedRoleId((current) => roleRows.some((role) => role.id === current) ? current : roleRows[0]?.id ?? '');
       setCreateBranchIds((current) => current.length ? current.filter((id) => activeBranches.some((branch) => branch.id === id)) : activeBranches.slice(0, 1).map((branch) => branch.id));
       setCreatePrimaryBranchId((current) => activeBranches.some((branch) => branch.id === current) ? current : activeBranches[0]?.id ?? '');
-    } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'User and role records could not be loaded.'); }
+      hasLoadedRef.current = true;
+    } catch (cause) {
+      if (isInitialLoad) setInitialLoadFailed(true);
+      setError(cause instanceof ApiError ? cause.message : 'User and role records could not be loaded.');
+    } finally {
+      if (isInitialLoad) setInitialLoading(false);
+    }
   }, [canReadUsers, canReadRoles, canReadPermissions, canCreateUsers, canReadBranches, canReadOrganizationUnits]);
   useEffect(() => { void load(); }, [load]);
 
@@ -96,6 +107,7 @@ export default function AccessPage() {
         roleIds: form.getAll('roleIds'),
         branchIds: createBranchIds, primaryBranchId: createPrimaryBranchId || null, organizationUnitIds: createOrganizationUnitIds,
         studentId: form.get('studentId') || null, guardianId: form.get('guardianId') || null,
+        tenantPersonId: form.get('tenantPersonId') || null,
       }) });
       setNotice(`User added. An activation link was queued for ${result.firstName} (${result.email}) and expires ${formatIndianDateTime(new Date(result.invitationExpiresAt))}.`);
       formElement.reset(); setCreateRoleIds([]); await load();
@@ -118,7 +130,7 @@ export default function AccessPage() {
     if (importPreview.globalError || !importPreview.rows.length || importPreview.rows.some((row) => row.errors.length)) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      const result = await apiRequest<{ count: number }>('/access/users/bulk-invitations', { method: 'POST', body: JSON.stringify({ users: importPreview.rows.map(({ firstName, lastName, email, phone, roleIds, branchIds, organizationUnitIds }) => ({ firstName, lastName, email, phone, roleIds, branchIds, primaryBranchId: branchIds[0], organizationUnitIds })) }) });
+      const result = await apiRequest<{ count: number }>('/access/users/bulk-invitations', { method: 'POST', body: JSON.stringify({ users: importPreview.rows.map(({ firstName, lastName, email, phone, roleIds, branchIds, organizationUnitIds, personNumber }) => ({ firstName, lastName, email, phone, roleIds, branchIds, primaryBranchId: branchIds[0], organizationUnitIds, ...(personNumber ? { personNumber } : {}) })) }) });
       setNotice(`${result.count} users added. Secure activation links were queued for their email addresses.`);
       setImportText(''); setImportFilename(''); await load();
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'The users could not be imported. No users were added.'); }
@@ -126,7 +138,7 @@ export default function AccessPage() {
   }
 
   function downloadImportTemplate() {
-    const content = 'firstName,lastName,email,phone,roleKeys,branchCodes,organizationUnitCodes\n';
+    const content = 'firstName,lastName,email,phone,roleKeys,branchCodes,organizationUnitCodes,personNumber\n';
     const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }));
     const link = document.createElement('a'); link.href = url; link.download = 'wasl-user-import-template.csv'; link.click(); URL.revokeObjectURL(url);
   }
@@ -246,7 +258,9 @@ export default function AccessPage() {
   return <main id="main-content" className="page-content">
     <div className="page-heading"><div><p className="eyebrow">SECURITY</p><h1>Users and roles</h1><p className="muted">Manage organization accounts, role membership, and permission grants.</p></div><span className="heading-count"><ShieldCheck size={16} /> Organization scoped</span></div>
     {notice && <div className="notice notice-success" role="status"><Check size={16} /> {notice}</div>}{error && <div className="notice notice-error" role="alert">{error}</div>}
-    <div className="access-layout">
+    {initialLoading ? <div className="loading-page" role="status">Loading users, roles, and access scopes…</div>
+      : initialLoadFailed ? <div className="empty-state"><span className="empty-icon"><ShieldCheck /></span><h2>Workspace access could not be loaded</h2><p>Check your connection, then retry. No user or role changes were made.</p><button className="button button-secondary" onClick={() => void load()}>Try again</button></div>
+      : <div className="access-layout">
       {canReadRoles && canReadPermissions && <section className="surface-panel role-editor-panel"><div className="section-heading section-heading-panel"><div><h2>Role permissions</h2><p>Untouched system roles use the default permission matrix. Saving makes the displayed grants explicit.</p></div></div>
         {roles.length ? <><label className="access-picker">Role<select value={selectedRoleId} onChange={(event) => setSelectedRoleId(event.target.value)}>{roles.map((role) => <option value={role.id} key={role.id}>{role.name}{role.isSystem ? ' · system' : ''}</option>)}</select></label>
           {selectedRole && <div className="permission-groups">{permissionGroups.map((group) => <fieldset key={group.group} className="permission-group"><legend>{group.group}</legend>{group.permissions.map((key) => {
@@ -270,6 +284,7 @@ export default function AccessPage() {
             {canReadBranches && branches.length > 0 && <label className="wide-field">Branch access<select multiple required value={createBranchIds} onChange={(event) => { const next = [...event.currentTarget.selectedOptions].map((option) => option.value); setCreateBranchIds(next); if (!next.includes(createPrimaryBranchId)) setCreatePrimaryBranchId(next[0] ?? ''); }} size={Math.min(Math.max(branches.length, 2), 5)}>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name} · {branch.code}</option>)}</select><small>Users can access records only for their assigned branches.</small></label>}
             {canReadBranches && branches.length > 1 && <label className="wide-field">Primary branch<select required value={createPrimaryBranchId} onChange={(event) => setCreatePrimaryBranchId(event.target.value)}>{branches.filter((branch) => createBranchIds.includes(branch.id)).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>}
             {canReadOrganizationUnits && organizationUnits.length > 0 && <label className="wide-field">Departments or groups <span className="muted">(optional)</span><select multiple value={createOrganizationUnitIds} onChange={(event) => setCreateOrganizationUnitIds([...event.currentTarget.selectedOptions].map((option) => option.value))} size={Math.min(Math.max(organizationUnits.length, 2), 5)}>{organizationUnits.map((unit) => <option key={unit.id} value={unit.id}>{unit.name} · {unit.unitType}</option>)}</select></label>}
+            {selectedCreateRoleKeys.includes('WORKSPACE_PERSON') && <label className="wide-field">Linked organisation person<select name="tenantPersonId" required defaultValue="" onChange={(event) => { const person = portalSubjects.persons.find((row) => row.id === event.target.value); if (person?.branchId) { setCreateBranchIds([person.branchId]); setCreatePrimaryBranchId(person.branchId); } }}><option value="">Choose a person without an account</option>{portalSubjects.persons.map((person) => <option key={person.id} value={person.id}>{person.personNumber} · {person.typeLabel} · {[person.firstName, person.middleName, person.lastName].filter(Boolean).join(' ')}{person.email ? ` · ${person.email}` : ' · Add email first'}</option>)}</select><small>They receive a secure activation email and can see only their own fee, payment, receipt, and attendance records.</small></label>}
             {selectedCreateRoleKeys.includes('STUDENT') && <label className="wide-field">Linked student<select name="studentId" required defaultValue=""><option value="">Choose student</option>{portalSubjects.students.map((student) => <option key={student.id} value={student.id}>{student.admissionNumber} · {[student.firstName, student.middleName, student.lastName].filter(Boolean).join(' ')}</option>)}</select></label>}
             {selectedCreateRoleKeys.includes('PARENT') && <label className="wide-field">Linked guardian<select name="guardianId" required defaultValue=""><option value="">Choose guardian</option>{portalSubjects.guardians.map((guardian) => <option key={guardian.id} value={guardian.id}>{[guardian.firstName, guardian.lastName].filter(Boolean).join(' ')} · {guardian.email ?? guardian.phone ?? 'No contact'}</option>)}</select><small>A guardian must already be linked to at least one student.</small></label>}
             <button className="button button-primary wide-field" disabled={busy}><UserPlus size={15} /> {busy ? 'Adding user…' : 'Add user and send activation link'}</button>
@@ -279,11 +294,11 @@ export default function AccessPage() {
         {canCreateUsers && canReadRoles && <section className="surface-panel user-import-panel">
           <div className="section-heading section-heading-panel"><div><h2>Bulk import users</h2><p>Upload a CSV, review every row, then send secure activation links in one import.</p></div><Upload size={18} /></div>
           <div className="user-import-actions"><button type="button" className="button button-secondary button-small" onClick={downloadImportTemplate}><Download size={14} /> Download CSV template</button><label className="button button-secondary button-small import-file-button"><Upload size={14} /> Choose CSV<input type="file" accept=".csv,text/csv" onChange={(event) => void handleImportFile(event)} /></label></div>
-          <p className="muted">Columns: firstName, lastName, email, phone, roleKeys, branchCodes, organizationUnitCodes. Put multiple roles, branches, or groups in one cell separated by <code>|</code>.</p>
+          <p className="muted">Columns: firstName, lastName, email, phone, roleKeys, branchCodes, organizationUnitCodes, personNumber. For Workspace Person accounts, include the matching profile number; the profile email must match the invite address.</p>
           {importFilename && <p className="user-import-filename">Reviewing <strong>{importFilename}</strong> · {importPreview.rows.length} rows</p>}
           {importPreview.globalError && <div className="notice notice-error" role="alert">{importPreview.globalError}</div>}
           {importPreview.rows.length > 0 && <>
-            <div className="table-wrap user-import-preview"><table><thead><tr><th>CSV row</th><th>User</th><th>Roles</th><th>Branches / groups</th><th>Validation</th></tr></thead><tbody>{importPreview.rows.map((row) => <tr key={`${row.line}-${row.email}`}><td>{row.line}</td><td>{row.firstName} {row.lastName ?? ''}<small className="table-subtext">{row.email}</small></td><td>{row.roleIds.map((id) => roles.find((role) => role.id === id)?.name).filter(Boolean).join(', ') || '—'}</td><td>{row.branchIds.map((id) => branches.find((branch) => branch.id === id)?.name).join(', ') || '—'}{row.organizationUnitIds.length > 0 && <small className="table-subtext">{row.organizationUnitIds.map((id) => organizationUnits.find((unit) => unit.id === id)?.name).join(', ')}</small>}</td><td>{row.errors.length ? <span className="status-pill status-red">{row.errors.join(' · ')}</span> : <span className="status-pill status-green">Ready</span>}</td></tr>)}</tbody></table></div>
+            <div className="table-wrap user-import-preview"><table><thead><tr><th>CSV row</th><th>User</th><th>Roles</th><th>Branches / groups</th><th>Validation</th></tr></thead><tbody>{importPreview.rows.map((row) => <tr key={`${row.line}-${row.email}`}><td>{row.line}</td><td>{row.firstName} {row.lastName ?? ''}<small className="table-subtext">{row.email}</small>{row.personNumber && <small className="table-subtext">Profile {row.personNumber}</small>}</td><td>{row.roleIds.map((id) => roles.find((role) => role.id === id)?.name).filter(Boolean).join(', ') || '—'}</td><td>{row.branchIds.map((id) => branches.find((branch) => branch.id === id)?.name).join(', ') || '—'}{row.organizationUnitIds.length > 0 && <small className="table-subtext">{row.organizationUnitIds.map((id) => organizationUnits.find((unit) => unit.id === id)?.name).join(', ')}</small>}</td><td>{row.errors.length ? <span className="status-pill status-red">{row.errors.join(' · ')}</span> : <span className="status-pill status-green">Ready</span>}</td></tr>)}</tbody></table></div>
             <div className="access-save-row"><span className="muted">{importPreview.rows.filter((row) => !row.errors.length).length} ready · {importPreview.rows.filter((row) => row.errors.length).length} need correction</span><button className="button button-primary" onClick={() => void importUsers()} disabled={busy || Boolean(importPreview.globalError) || importPreview.rows.some((row) => row.errors.length > 0)}>{busy ? 'Importing…' : `Import ${importPreview.rows.length} users`}</button></div>
           </>}
         </section>}
@@ -304,7 +319,7 @@ export default function AccessPage() {
           </tr>)}</tbody></table></div> : <div className="empty-state"><span className="empty-icon"><UsersRound /></span><h2>No users found</h2><p>Add an individual user or import a CSV to send secure activation links.</p></div>}
         </section>}
       </div>
-    </div>
+    </div>}
   </main>;
 }
 

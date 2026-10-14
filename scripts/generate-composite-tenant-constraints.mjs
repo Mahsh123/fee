@@ -18,6 +18,10 @@ const additiveBranchMigrationDirectories = Object.freeze({
   add: '20261006001000_branch_finance_composite_foreign_keys_add',
   validate: '20261006001100_branch_finance_composite_foreign_keys_validate',
 });
+const additivePeopleMigrationDirectories = Object.freeze({
+  add: '20261013000200_tenant_person_composite_foreign_keys_add',
+  validate: '20261013000300_tenant_person_composite_foreign_keys_validate',
+});
 // Relations introduced after the historical tenant-FK rollout must never be
 // retroactively written into its checksummed migration files. Register each
 // new relation here so the generator creates a separately staged add/validate
@@ -36,6 +40,36 @@ const additiveBranchRelations = new Set([
   'Invoice.branch',
   'LateFeeAccrual.branch',
 ]);
+const additivePeopleRelations = new Set([
+  'User.tenantPerson',
+  'Student.person',
+  'TenantPerson.branch',
+  'TenantPersonGroupMember.person',
+  'TenantPersonGroupMember.group',
+  'AttendanceSession.personGroup',
+  'AttendanceRecord.person',
+  'FeeDemand.person',
+  'PaymentOrder.person',
+  'Payment.person',
+  'Credit.person',
+  'Adjustment.person',
+  'Receipt.person',
+  'Invoice.person',
+  'Notification.person',
+]);
+const additiveBillingMigrationDirectories = Object.freeze({
+  add: '20261013000600_fee_assignment_cycle_composite_foreign_keys_add',
+  validate: '20261013000700_fee_assignment_cycle_composite_foreign_keys_validate',
+});
+const additiveBillingRelations = new Set([
+  'FeeAssignmentCycle.assignment',
+  'FeeAssignmentCycle.branch',
+  'FeeUsageInput.cycle',
+  'FeeUsageInput.person',
+  'FeeUsageInput.feeStructureItem',
+  'FeeDemand.cycle',
+]);
+const additiveTenantRelations = new Set([...additiveBranchRelations, ...additivePeopleRelations, ...additiveBillingRelations]);
 const identifier = '"((?:[^"]|"")*)"';
 const action = '(NO ACTION|RESTRICT|CASCADE|SET NULL|SET DEFAULT)';
 
@@ -178,7 +212,7 @@ export function buildCompositeTenantConstraintPlan({ schema, targetSql, legacySq
     }
     const legacyKey = { ...edge, sourceColumns: edge.sourceColumns.slice(1), targetColumns: edge.targetColumns.slice(1) };
     const legacy = legacyConstraints.filter((constraint) => sameKey(constraint, legacyKey));
-    if (legacy.length === 0 && additiveBranchRelations.has(`${edge.sourceModel}.${edge.relationName}`)) {
+    if (legacy.length === 0 && additiveTenantRelations.has(`${edge.sourceModel}.${edge.relationName}`)) {
       return { ...edge, desired: desired[0], legacy: null, alreadyComposite: false, introducedAfterLegacyRollout: true };
     }
     if (legacy.length !== 1) {
@@ -190,7 +224,7 @@ export function buildCompositeTenantConstraintPlan({ schema, targetSql, legacySq
   const plan = planned.filter((edge) => !edge.introducedAfterLegacyRollout);
   const additivePlan = planned.filter((edge) => edge.introducedAfterLegacyRollout);
   const unconsumedAdditiveRelations = tenantModelNames.length === TENANT_MODEL_NAMES.length
-    ? [...additiveBranchRelations].filter((key) => !additivePlan.some((edge) => `${edge.sourceModel}.${edge.relationName}` === key))
+    ? [...additiveTenantRelations].filter((key) => !additivePlan.some((edge) => `${edge.sourceModel}.${edge.relationName}` === key))
     : [];
   if (unconsumedAdditiveRelations.length) {
     throw new Error(`Registered additive branch relations are missing from the Prisma schema or migration history: ${unconsumedAdditiveRelations.join(', ')}`);
@@ -201,10 +235,18 @@ export function buildCompositeTenantConstraintPlan({ schema, targetSql, legacySq
     if (desiredNames.has(desired.name)) throw new Error(`Generated tenant foreign key name ${desired.name} is not unique`);
     desiredNames.add(desired.name);
   }
-  return { plan, additivePlan, tenantModelCount: inventory.tenantModelCount, tenantRelationCount: inventory.tenantRelationCount };
+  return {
+    plan,
+    additivePlan,
+    additiveBranchPlan: additivePlan.filter((edge) => additiveBranchRelations.has(`${edge.sourceModel}.${edge.relationName}`)),
+    additivePeoplePlan: additivePlan.filter((edge) => additivePeopleRelations.has(`${edge.sourceModel}.${edge.relationName}`)),
+    additiveBillingPlan: additivePlan.filter((edge) => additiveBillingRelations.has(`${edge.sourceModel}.${edge.relationName}`)),
+    tenantModelCount: inventory.tenantModelCount,
+    tenantRelationCount: inventory.tenantRelationCount,
+  };
 }
 
-export function renderCompositeTenantConstraintMigration(plan, additivePlan = []) {
+export function renderCompositeTenantConstraintMigration(plan, additiveBranchPlan = [], additivePeoplePlan = [], additiveBillingPlan = []) {
   const addStatements = [
     '-- Generated from prisma/schema.prisma; do not edit constraint tuples by hand.',
     '-- This phase only installs enforcement; existing rows are validated in the next migration.',
@@ -315,14 +357,14 @@ $tenant_fk_phase_c$;`);
     { directory: migrationDirectories.validate, sql: validateStatements.join('\n') },
     { directory: migrationDirectories.dropLegacy, sql: dropStatements.join('\n') },
   ];
-  if (additivePlan.length) {
+  if (additiveBranchPlan.length) {
     const additiveAdd = [
       '-- Generated from prisma/schema.prisma and the explicit additive relation registry.',
       '-- These relations were introduced after the original tenant-FK rollout.',
       'BEGIN;',
       "SET LOCAL lock_timeout = '5s';",
       "SET LOCAL statement_timeout = '1min';",
-      ...additivePlan.map(({ desired }) =>
+      ...additiveBranchPlan.map(({ desired }) =>
         `ALTER TABLE ${quoteIdentifier(desired.sourceTable)} ADD CONSTRAINT ${quoteIdentifier(desired.name)} ` +
         `FOREIGN KEY (${desired.sourceColumns.map(quoteIdentifier).join(', ')}) ` +
         `REFERENCES ${quoteIdentifier(desired.targetTable)} (${desired.targetColumns.map(quoteIdentifier).join(', ')}) ` +
@@ -337,13 +379,75 @@ $tenant_fk_phase_c$;`);
       'BEGIN;',
       "SET LOCAL lock_timeout = '5s';",
       "SET LOCAL statement_timeout = '30min';",
-      ...additivePlan.map(({ desired }) => `ALTER TABLE ${quoteIdentifier(desired.sourceTable)} VALIDATE CONSTRAINT ${quoteIdentifier(desired.name)};`),
+      ...additiveBranchPlan.map(({ desired }) => `ALTER TABLE ${quoteIdentifier(desired.sourceTable)} VALIDATE CONSTRAINT ${quoteIdentifier(desired.name)};`),
       'COMMIT;',
       '',
     ].join('\n');
     migrations.push(
       { directory: additiveBranchMigrationDirectories.add, sql: additiveAdd },
       { directory: additiveBranchMigrationDirectories.validate, sql: additiveValidate },
+    );
+  }
+  if (additivePeoplePlan.length) {
+    const peopleAdd = [
+      '-- Generated from prisma/schema.prisma and the explicit additive tenant-person relation registry.',
+      '-- These relations were introduced with the shared tenant person identity.',
+      'BEGIN;',
+      "SET LOCAL lock_timeout = '5s';",
+      "SET LOCAL statement_timeout = '1min';",
+      ...additivePeoplePlan.map(({ desired }) =>
+        `ALTER TABLE ${quoteIdentifier(desired.sourceTable)} ADD CONSTRAINT ${quoteIdentifier(desired.name)} ` +
+        `FOREIGN KEY (${desired.sourceColumns.map(quoteIdentifier).join(', ')}) ` +
+        `REFERENCES ${quoteIdentifier(desired.targetTable)} (${desired.targetColumns.map(quoteIdentifier).join(', ')}) ` +
+        `ON DELETE ${desired.onDelete} ON UPDATE ${desired.onUpdate} NOT VALID;`,
+      ),
+      'COMMIT;',
+      '',
+    ].join('\n');
+    const peopleValidate = [
+      '-- Generated from prisma/schema.prisma and the explicit additive tenant-person relation registry.',
+      '-- Validate rows after indexes and the NOT VALID constraints are installed.',
+      'BEGIN;',
+      "SET LOCAL lock_timeout = '5s';",
+      "SET LOCAL statement_timeout = '30min';",
+      ...additivePeoplePlan.map(({ desired }) => `ALTER TABLE ${quoteIdentifier(desired.sourceTable)} VALIDATE CONSTRAINT ${quoteIdentifier(desired.name)};`),
+      'COMMIT;',
+      '',
+    ].join('\n');
+    migrations.push(
+      { directory: additivePeopleMigrationDirectories.add, sql: peopleAdd },
+      { directory: additivePeopleMigrationDirectories.validate, sql: peopleValidate },
+    );
+  }
+  if (additiveBillingPlan.length) {
+    const billingAdd = [
+      '-- Generated from prisma/schema.prisma and the explicit additive billing-cycle relation registry.',
+      '-- These relations were introduced with generic recurring fee cycles.',
+      'BEGIN;',
+      "SET LOCAL lock_timeout = '5s';",
+      "SET LOCAL statement_timeout = '1min';",
+      ...additiveBillingPlan.map(({ desired }) =>
+        `ALTER TABLE ${quoteIdentifier(desired.sourceTable)} ADD CONSTRAINT ${quoteIdentifier(desired.name)} ` +
+        `FOREIGN KEY (${desired.sourceColumns.map(quoteIdentifier).join(', ')}) ` +
+        `REFERENCES ${quoteIdentifier(desired.targetTable)} (${desired.targetColumns.map(quoteIdentifier).join(', ')}) ` +
+        `ON DELETE ${desired.onDelete} ON UPDATE ${desired.onUpdate} NOT VALID;`,
+      ),
+      'COMMIT;',
+      '',
+    ].join('\n');
+    const billingValidate = [
+      '-- Generated from prisma/schema.prisma and the explicit additive billing-cycle relation registry.',
+      '-- Validate cycle/person and fee-item ownership after constraints are installed.',
+      'BEGIN;',
+      "SET LOCAL lock_timeout = '5s';",
+      "SET LOCAL statement_timeout = '30min';",
+      ...additiveBillingPlan.map(({ desired }) => `ALTER TABLE ${quoteIdentifier(desired.sourceTable)} VALIDATE CONSTRAINT ${quoteIdentifier(desired.name)};`),
+      'COMMIT;',
+      '',
+    ].join('\n');
+    migrations.push(
+      { directory: additiveBillingMigrationDirectories.add, sql: billingAdd },
+      { directory: additiveBillingMigrationDirectories.validate, sql: billingValidate },
     );
   }
   return Object.freeze(migrations);
@@ -375,6 +479,8 @@ async function readLegacyMigrationSql() {
   const generatedConstraintStages = new Set([
     ...Object.values(migrationDirectories),
     ...Object.values(additiveBranchMigrationDirectories),
+    ...Object.values(additivePeopleMigrationDirectories),
+    ...Object.values(additiveBillingMigrationDirectories),
   ]);
   const historicalMigrations = [...stages.preIndexMigrations, ...stages.postIndexMigrations]
     .filter((directory) => !generatedConstraintStages.has(directory));
@@ -392,12 +498,12 @@ export async function generateCompositeTenantConstraintMigration() {
   ]);
   const targetSql = await generatePrismaSchemaSql();
   const result = buildCompositeTenantConstraintPlan({ schema, targetSql, legacySql });
-  return { ...result, migrations: renderCompositeTenantConstraintMigration(result.plan, result.additivePlan) };
+  return { ...result, migrations: renderCompositeTenantConstraintMigration(result.plan, result.additiveBranchPlan, result.additivePeoplePlan, result.additiveBillingPlan) };
 }
 
 async function main() {
   const checkOnly = process.argv.includes('--check');
-  const { plan, additivePlan, tenantModelCount, tenantRelationCount, migrations } = await generateCompositeTenantConstraintMigration();
+  const { plan, additiveBranchPlan, additivePeoplePlan, additiveBillingPlan, tenantModelCount, tenantRelationCount, migrations } = await generateCompositeTenantConstraintMigration();
   for (const migration of migrations) {
     const migrationDirectory = resolve(migrationRoot, migration.directory);
     const migrationFile = resolve(migrationDirectory, 'migration.sql');
@@ -413,7 +519,7 @@ async function main() {
       await writeFile(migrationFile, migration.sql, 'utf8');
     }
   }
-  console.log(`Generated ${plan.length} historical and ${additivePlan.length} additive composite foreign keys for ${tenantModelCount} tenant models and ${tenantRelationCount} relations across ${migrations.length} migrations.`);
+  console.log(`Generated ${plan.length} historical, ${additiveBranchPlan.length} branch, ${additivePeoplePlan.length} tenant-person, and ${additiveBillingPlan.length} billing-cycle composite foreign keys for ${tenantModelCount} tenant models and ${tenantRelationCount} relations across ${migrations.length} migrations.`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

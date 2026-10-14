@@ -11,14 +11,18 @@
  * configuration UI's dropdowns, so adding a value here is a single-line change.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ENUM_LABELS = exports.SEQUENCE_KINDS = exports.NOTIFICATION_EVENTS = exports.NOTIFICATION_CHANNELS = exports.APPROVAL_STATUSES = exports.APPROVAL_ACTION_TYPES = exports.ROUNDING_MODES = exports.OVERPAYMENT_POLICIES = exports.PARTIAL_PAYMENT_POLICIES = exports.LATE_FEE_MODES = exports.ASSIGNMENT_TARGET_TYPES = exports.ACADEMIC_UNIT_TYPES = exports.SYSTEM_LEDGER_ACCOUNTS = exports.LEDGER_ACCOUNT_TYPES = exports.LEDGER_SIDES = exports.ADJUSTMENT_STATUSES = exports.ADJUSTMENT_KINDS = exports.CREDIT_SOURCES = exports.CREDIT_STATUSES = exports.REFUND_STATUSES = exports.REFUND_KINDS = exports.ALLOCATION_MODES = exports.GATEWAY_ENVIRONMENTS = exports.GATEWAY_PROVIDERS = exports.PAYER_TYPES = exports.MANUAL_PAYMENT_METHODS = exports.PAYMENT_METHOD_KINDS = exports.PAYMENT_CHANNELS = exports.PAYMENT_STATUSES = exports.INSTALLMENT_BASES = exports.INSTALLMENT_STATUSES = exports.DEMAND_ITEM_STATUSES = exports.DEMAND_STATUSES = exports.CALCULATION_STAGES = exports.ACTION_AMOUNT_BASES = exports.DEBIT_ACTION_KINDS = exports.CREDIT_ACTION_KINDS = exports.ACTION_KINDS = exports.LOGICAL_OPERATORS = exports.CONDITION_OPERATORS = exports.STACKING_MODES = exports.POLICY_TYPES = exports.VERSION_STATUSES = exports.FEE_OPTIONALITIES = exports.FEE_FREQUENCIES = exports.FEE_CALCULATION_METHODS = exports.ROLE_KEYS = exports.USER_STATUSES = exports.TENANT_STATUSES = void 0;
+exports.APPROVAL_STATUSES = exports.APPROVAL_ACTION_TYPES = exports.ROUNDING_MODES = exports.OVERPAYMENT_POLICIES = exports.PARTIAL_PAYMENT_POLICIES = exports.LATE_FEE_MODES = exports.ASSIGNMENT_TARGET_TYPES = exports.ACADEMIC_UNIT_TYPES = exports.SYSTEM_LEDGER_ACCOUNTS = exports.LEDGER_ACCOUNT_TYPES = exports.LEDGER_SIDES = exports.ADJUSTMENT_STATUSES = exports.ADJUSTMENT_KINDS = exports.CREDIT_SOURCES = exports.CREDIT_STATUSES = exports.REFUND_STATUSES = exports.REFUND_KINDS = exports.ALLOCATION_MODES = exports.GATEWAY_ENVIRONMENTS = exports.GATEWAY_PROVIDERS = exports.PAYER_TYPES = exports.MANUAL_PAYMENT_METHODS = exports.PAYMENT_METHOD_KINDS = exports.PAYMENT_CHANNELS = exports.PAYMENT_STATUSES = exports.INSTALLMENT_BASES = exports.INSTALLMENT_STATUSES = exports.DEMAND_ITEM_STATUSES = exports.DEMAND_STATUSES = exports.CALCULATION_STAGES = exports.ACTION_AMOUNT_BASES = exports.DEBIT_ACTION_KINDS = exports.CREDIT_ACTION_KINDS = exports.ACTION_KINDS = exports.LOGICAL_OPERATORS = exports.CONDITION_OPERATORS = exports.STACKING_MODES = exports.POLICY_TYPES = exports.VERSION_STATUSES = exports.FEE_OPTIONALITIES = exports.FEE_FREQUENCIES = exports.FEE_CALCULATION_METHODS = exports.FEE_CATEGORY_KINDS = exports.ADMISSION_STATUSES = exports.GUARDIAN_RELATIONS = exports.STUDENT_STATUSES = exports.ROLE_KEYS = exports.USER_STATUSES = exports.SUBSCRIPTION_STATUSES = exports.TENANT_STATUSES = void 0;
+exports.ENUM_LABELS = exports.SEQUENCE_KINDS = exports.NOTIFICATION_EVENTS = exports.NOTIFICATION_CHANNELS = void 0;
 exports.enumLabel = enumLabel;
 exports.TENANT_STATUSES = ['TRIAL', 'ACTIVE', 'SUSPENDED', 'ARCHIVED'];
+/** Administrative subscription state, distinct from tenant access lifecycle. */
+exports.SUBSCRIPTION_STATUSES = ['TRIAL', 'ACTIVE', 'PAST_DUE', 'PAUSED', 'CANCELLED', 'EXPIRED'];
 exports.USER_STATUSES = ['INVITED', 'ACTIVE', 'SUSPENDED', 'DISABLED'];
 exports.ROLE_KEYS = [
     'PLATFORM_ADMIN',
     'TENANT_OWNER',
     'TENANT_ADMIN',
+    'TENANT_MEMBER',
     'FINANCE_ADMIN',
     'FINANCE_STAFF',
     'ADMISSION_STAFF',
@@ -28,9 +32,24 @@ exports.ROLE_KEYS = [
     'STUDENT',
     'PARENT',
 ];
+exports.STUDENT_STATUSES = ['PROSPECT', 'ACTIVE', 'ON_LEAVE', 'SUSPENDED', 'WITHDRAWN', 'ALUMNI'];
+exports.GUARDIAN_RELATIONS = ['FATHER', 'MOTHER', 'GUARDIAN', 'SPONSOR_CONTACT', 'OTHER'];
+exports.ADMISSION_STATUSES = ['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'FEES_PENDING', 'CONFIRMED', 'REJECTED', 'CANCELLED', 'ENROLLED'];
 // ---------------------------------------------------------------------------
 // Fee catalog
 // ---------------------------------------------------------------------------
+exports.FEE_CATEGORY_KINDS = [
+    'ACADEMIC',
+    'ADMISSION',
+    'EXAMINATION',
+    'TRANSPORT',
+    'HOSTEL',
+    'LIBRARY',
+    'LABORATORY',
+    'ACTIVITIES',
+    'ADMINISTRATIVE',
+    'OTHER',
+];
 exports.FEE_CALCULATION_METHODS = [
     'FIXED',
     'PERCENTAGE',
@@ -257,6 +276,7 @@ exports.SYSTEM_LEDGER_ACCOUNTS = {
     BANK_ACCOUNT: { code: '1400', type: 'ASSET', name: 'Bank Account' },
     STUDENT_CREDIT: { code: '2100', type: 'LIABILITY', name: 'Student Credit Balance' },
     SPONSOR_PAYABLE: { code: '2200', type: 'LIABILITY', name: 'Sponsor Payable' },
+    UNAPPLIED_GATEWAY_RECEIPTS: { code: '2500', type: 'LIABILITY', name: 'Unapplied Gateway Receipts' },
     FEE_INCOME: { code: '4000', type: 'INCOME', name: 'Fee Income' },
     DISCOUNT_CONTRA: { code: '4100', type: 'INCOME', name: 'Discounts and Concessions' },
     SCHOLARSHIP_CONTRA: { code: '4200', type: 'INCOME', name: 'Scholarships' },
@@ -273,6 +293,7 @@ exports.SYSTEM_LEDGER_ACCOUNTS = {
 // Lifecycle / configuration
 // ---------------------------------------------------------------------------
 exports.ACADEMIC_UNIT_TYPES = [
+    'COURSE',
     'PROGRAM',
     'CLASS',
     'SECTION',
@@ -306,10 +327,13 @@ exports.APPROVAL_ACTION_TYPES = [
     'WRITE_OFF',
     'FEE_STRUCTURE_CHANGE',
     'CREDIT_APPLICATION',
+    'PAYMENT_COLLECTION',
 ];
 exports.APPROVAL_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'EXECUTED'];
 exports.NOTIFICATION_CHANNELS = ['EMAIL', 'SMS', 'WHATSAPP', 'PUSH', 'IN_APP'];
 exports.NOTIFICATION_EVENTS = [
+    'USER_INVITATION',
+    'USER_PASSWORD_RESET',
     'PAYMENT_SUCCESS',
     'PAYMENT_FAILED',
     'PAYMENT_PENDING',
@@ -330,6 +354,7 @@ exports.SEQUENCE_KINDS = [
     'STUDENT',
     'REFUND',
     'CREDIT_NOTE',
+    'ADJUSTMENT',
 ];
 /** Human-facing labels, used by the web app so a value is never shown raw. */
 exports.ENUM_LABELS = {

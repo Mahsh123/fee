@@ -17,7 +17,7 @@ type AdjustmentTarget = {
     netAmount: Prisma.Decimal; adjustmentAmount: Prisma.Decimal; paidAmount: Prisma.Decimal; waivedAmount: Prisma.Decimal; updatedAt: Date;
   };
   demand: {
-    id: string; branchId: string | null; studentId: string; demandNumber: string; status: DemandStatus; currency: string;
+    id: string; branchId: string | null; studentId: string | null; personId: string | null; demandNumber: string; status: DemandStatus; currency: string;
     netAmount: Prisma.Decimal; adjustmentAmount: Prisma.Decimal; paidAmount: Prisma.Decimal; waivedAmount: Prisma.Decimal; creditedAmount: Prisma.Decimal;
     dueDate: Date; updatedAt: Date;
   };
@@ -134,7 +134,7 @@ export class AdjustmentsService {
       const adjustment = await tx.adjustment.create({
         data: {
           id: adjustmentId, tenantId, branchId: target.demand.branchId, adjustmentNumber, demandId: target.demand.id, demandItemId: target.item.id,
-          installmentItemId: target.installmentItem?.id ?? null, studentId: target.demand.studentId,
+          installmentItemId: target.installmentItem?.id ?? null, studentId: target.demand.studentId, personId: target.demand.personId,
           kind: input.kind as AdjustmentKind, status: requiresApproval ? 'PENDING_APPROVAL' : 'APPROVED', direction,
           amount: amount.toString(), currency: target.demand.currency, reason: input.reason,
           policyId: input.policyId ?? null, instrumentType: input.instrumentType ?? null, instrumentId: input.instrumentId ?? null,
@@ -166,7 +166,7 @@ export class AdjustmentsService {
       if (requiresApproval && approvalRequestId) {
         await this.outbox.publish(tx, { tenantId, eventType: 'approval.requested', aggregateType: 'ApprovalRequest', aggregateId: approvalRequestId, payload: { approvalRequestId, actionType: approvalActionType(input.kind), entityType: 'Adjustment', entityId: adjustment.id, amount: amount.toString(), requestedBy: actorId, summary: `Adjustment ${adjustmentNumber}` }, actorId, requestId: context.requestId });
       } else {
-        await this.outbox.publish(tx, { tenantId, eventType: 'adjustment.applied', aggregateType: 'Adjustment', aggregateId: adjustment.id, payload: { adjustmentId: adjustment.id, adjustmentNumber, demandId: target.demand.id, studentId: target.demand.studentId, amount: amount.toString(), direction, currency: target.demand.currency, ledgerGroupId }, actorId, requestId: context.requestId });
+        await this.outbox.publish(tx, { tenantId, eventType: 'adjustment.applied', aggregateType: 'Adjustment', aggregateId: adjustment.id, payload: { adjustmentId: adjustment.id, adjustmentNumber, demandId: target.demand.id, studentId: target.demand.studentId, personId: target.demand.personId, amount: amount.toString(), direction, currency: target.demand.currency, ledgerGroupId }, actorId, requestId: context.requestId });
       }
       return response;
     });
@@ -240,7 +240,7 @@ export class AdjustmentsService {
     this.validateTarget(target, adjustment.direction, amount);
     if (adjustment.direction === 'CREDIT') {
       const activeOrders = await tx.paymentOrder.findMany({
-        where: { tenantId: adjustment.tenantId, studentId: target.demand.studentId, status: { in: ['CREATED', 'INITIATED', 'PENDING'] }, expiresAt: { gt: new Date() } },
+        where: { tenantId: adjustment.tenantId, ...(target.demand.personId ? { personId: target.demand.personId } : { studentId: target.demand.studentId }), status: { in: ['CREATED', 'INITIATED', 'PENDING'] }, expiresAt: { gt: new Date() } },
         select: { responsibilityShares: true },
       });
       const reserved = activeOrders.flatMap((order) => parseResponsibilityReservations(order.responsibilityShares))
@@ -310,16 +310,17 @@ export class AdjustmentsService {
           : 'DISCOUNT_CONTRA';
     const receivableSide = adjustment.direction === 'DEBIT' ? 'DEBIT' : 'CREDIT';
     const contraSide = receivableSide === 'DEBIT' ? 'CREDIT' : 'DEBIT';
+    const receivableAccount: SystemLedgerAccountKey = target.demand.personId && !target.demand.studentId ? 'TENANT_PERSON_RECEIVABLE' : 'STUDENT_RECEIVABLE';
     return this.ledger.post(tx, {
       tenantId: adjustment.tenantId,
       currency: amount.currency.code,
       eventType: adjustment.reversalOfAdjustmentId ? 'ADJUSTMENT_REVERSED' : 'ADJUSTMENT_APPLIED',
       entryDate: new Date().toISOString().slice(0, 10),
       lines: [
-        { accountKey: 'STUDENT_RECEIVABLE', side: receivableSide, amount: amount.toString(), narration: `${adjustment.direction === 'DEBIT' ? 'Increase' : 'Reduce'} receivable · ${adjustment.adjustmentNumber}` },
+        { accountKey: receivableAccount, side: receivableSide, amount: amount.toString(), narration: `${adjustment.direction === 'DEBIT' ? 'Increase' : 'Reduce'} receivable · ${adjustment.adjustmentNumber}` },
         { accountKey: account, side: contraSide, amount: amount.toString(), narration: `${adjustment.kind.replaceAll('_', ' ')} · ${adjustment.reason}` },
       ],
-      studentId: target.demand.studentId, demandId: target.demand.id, demandItemId: target.item.id, adjustmentId: adjustment.id,
+      studentId: target.demand.studentId, personId: target.demand.personId, demandId: target.demand.id, demandItemId: target.item.id, adjustmentId: adjustment.id,
       narration: `${adjustment.kind.replaceAll('_', ' ')} ${adjustment.adjustmentNumber}`, createdBy: actorId,
     });
   }

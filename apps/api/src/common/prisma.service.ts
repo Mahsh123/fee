@@ -164,11 +164,36 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
     if (!context?.isPlatformAdmin || context.tenantId !== platformTenantId || !PLATFORM_TENANT_UUID.test(platformTenantId)) {
       throw AppError.forbidden('Platform dashboard metrics require the verified platform session.');
     }
-    const [plans, subscriptionsByCurrency, invoicesByCurrency, requestedRefundsByCurrency, domains] = await Promise.all([
-      this.#client.$queryRaw<Array<{ activePlans: number }>>(Prisma.sql`
-        SELECT COUNT(*) FILTER (WHERE "active")::int AS "activePlans"
-        FROM public."plans"`),
-      this.#client.$queryRaw<Array<{ currency: string; activeCount: number; trialCount: number; monthlyRecurringRevenue: string }>>(Prisma.sql`
+    // Keep these reads sequential. The Neon runtime pool is intentionally small;
+    // opening five aggregate queries at once can exhaust its connections and
+    // make the whole control-plane dashboard fail with query timeouts.
+    const overview = await this.#client.$queryRaw<Array<{
+      totalTenants: number;
+      tenantStatuses: Record<string, number>;
+      subscriptionStatuses: Record<string, number>;
+      activeSuperAdmins: number;
+      activePlans: number;
+    }>>(Prisma.sql`
+        WITH tenant_rows AS (
+          SELECT "status"::text AS status, "subscriptionStatus"::text AS "subscriptionStatus"
+          FROM public."tenants"
+          WHERE "id" <> ${platformTenantId}::uuid
+        ),
+        tenant_status_counts AS (
+          SELECT status, COUNT(*)::int AS count FROM tenant_rows GROUP BY status
+        ),
+        subscription_status_counts AS (
+          SELECT "subscriptionStatus" AS status, COUNT(*)::int AS count
+          FROM tenant_rows GROUP BY "subscriptionStatus"
+        )
+        SELECT
+          (SELECT COUNT(*)::int FROM tenant_rows) AS "totalTenants",
+          COALESCE((SELECT jsonb_object_agg(status, count) FROM tenant_status_counts), '{}'::jsonb) AS "tenantStatuses",
+          COALESCE((SELECT jsonb_object_agg(status, count) FROM subscription_status_counts), '{}'::jsonb) AS "subscriptionStatuses",
+          (SELECT COUNT(*)::int FROM public."users"
+            WHERE "tenantId" = ${platformTenantId}::uuid AND "isPlatformAdmin" AND "status"::text = 'ACTIVE' AND "deletedAt" IS NULL) AS "activeSuperAdmins",
+          (SELECT COUNT(*) FILTER (WHERE "active")::int FROM public."plans") AS "activePlans"`);
+    const subscriptionsByCurrency = await this.#client.$queryRaw<Array<{ currency: string; activeCount: number; trialCount: number; monthlyRecurringRevenue: string }>>(Prisma.sql`
         SELECT "currency"::text AS currency,
           COUNT(*) FILTER (WHERE "isCurrent" AND "status"::text = 'ACTIVE')::int AS "activeCount",
           COUNT(*) FILTER (WHERE "isCurrent" AND "status"::text = 'TRIAL')::int AS "trialCount",
@@ -179,8 +204,8 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
           END), 0)::text AS "monthlyRecurringRevenue"
         FROM public."tenant_subscriptions"
         WHERE "tenantId" <> ${platformTenantId}::uuid AND "isCurrent"
-        GROUP BY "currency" ORDER BY "currency"`),
-      this.#client.$queryRaw<Array<{ currency: string; openCount: number; overdueCount: number; outstandingAmount: string }>>(Prisma.sql`
+        GROUP BY "currency" ORDER BY "currency"`);
+    const invoicesByCurrency = await this.#client.$queryRaw<Array<{ currency: string; openCount: number; overdueCount: number; outstandingAmount: string }>>(Prisma.sql`
         WITH collected AS (
           SELECT "tenantId", "invoiceId", SUM("amount") AS amount
           FROM public."platform_payments"
@@ -194,20 +219,23 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
         FROM public."platform_invoices" AS invoice
         LEFT JOIN collected ON collected."tenantId" = invoice."tenantId" AND collected."invoiceId" = invoice."id"
         WHERE invoice."tenantId" <> ${platformTenantId}::uuid AND invoice."status" IN ('OPEN', 'PARTIALLY_PAID', 'PAST_DUE')
-        GROUP BY invoice."currency" ORDER BY invoice."currency"`),
-      this.#client.$queryRaw<Array<{ currency: string; count: number; amount: string }>>(Prisma.sql`
+        GROUP BY invoice."currency" ORDER BY invoice."currency"`);
+    const requestedRefundsByCurrency = await this.#client.$queryRaw<Array<{ currency: string; count: number; amount: string }>>(Prisma.sql`
         SELECT "currency"::text AS currency, COUNT(*)::int AS count, COALESCE(SUM("amount"), 0)::text AS amount
         FROM public."platform_refunds"
         WHERE "tenantId" <> ${platformTenantId}::uuid AND "status" = 'REQUESTED'
-        GROUP BY "currency" ORDER BY "currency"`),
-      this.#client.$queryRaw<Array<{ verified: number; pending: number }>>(Prisma.sql`
+        GROUP BY "currency" ORDER BY "currency"`);
+    const domains = await this.#client.$queryRaw<Array<{ verified: number; pending: number }>>(Prisma.sql`
         SELECT COUNT(*) FILTER (WHERE "verifiedAt" IS NOT NULL)::int AS verified,
           COUNT(*) FILTER (WHERE "verifiedAt" IS NULL)::int AS pending
         FROM public."tenant_domains"
-        WHERE "tenantId" <> ${platformTenantId}::uuid`),
-    ]);
+        WHERE "tenantId" <> ${platformTenantId}::uuid`);
     return {
-      activePlans: plans[0]?.activePlans ?? 0,
+      totalTenants: overview[0]?.totalTenants ?? 0,
+      tenantStatuses: overview[0]?.tenantStatuses ?? {},
+      subscriptionStatuses: overview[0]?.subscriptionStatuses ?? {},
+      activeSuperAdmins: overview[0]?.activeSuperAdmins ?? 0,
+      activePlans: overview[0]?.activePlans ?? 0,
       subscriptionsByCurrency,
       invoicesByCurrency,
       requestedRefundsByCurrency,

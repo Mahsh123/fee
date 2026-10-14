@@ -9,6 +9,7 @@ import { AppModule } from './app.module';
 import { AppConfigService } from './config/env';
 import { RequestIdMiddleware } from './common/http';
 import { TenantHostResolutionMiddleware } from './common/tenant-host';
+import { API_CORS_ALLOWED_HEADERS } from './common/cors';
 import type { RequestWithContext } from './common/errors';
 import type { NextFunction, Response } from 'express';
 import type { CustomOrigin } from '@nestjs/common/interfaces/external/cors-options.interface';
@@ -88,7 +89,7 @@ function configureSecurity(app: INestApplication, config: AppConfigService): voi
     origin: corsOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'authorization', 'x-request-id', 'x-idempotency-key'],
+    allowedHeaders: API_CORS_ALLOWED_HEADERS,
     exposedHeaders: ['x-request-id'],
     maxAge: 600,
   });

@@ -1,7 +1,7 @@
 'use client';
 import { formatIndianDate } from '../../lib/locale';
 
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Building2, Check, GitBranch, UsersRound } from 'lucide-react';
 import { ApiError, apiRequest, type SessionUser } from '../../lib/api';
 import { useSession } from '../../components/session-provider';
@@ -37,8 +37,13 @@ export default function OrganizationPage() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const hasLoadedRef = useRef(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [initialLoadFailed, setInitialLoadFailed] = useState(false);
 
   const load = useCallback(async () => {
+    const isInitialLoad = !hasLoadedRef.current;
+    if (isInitialLoad) { setInitialLoading(true); setInitialLoadFailed(false); }
     setError('');
     try {
       const [branchPage, unitPage, userPage, assignmentPage] = await Promise.all([
@@ -54,8 +59,12 @@ export default function OrganizationPage() {
         const assignments = branchPage.items.flatMap((branch) => branch.members.filter((member) => member.userId === row.id).map((member) => ({ branchId: branch.id, isPrimary: member.isPrimary })));
         return [row.id, { branchIds: assignments.map((item) => item.branchId), primaryBranchId: assignments.find((item) => item.isPrimary)?.branchId ?? assignments[0]?.branchId ?? '' }];
       })));
+      hasLoadedRef.current = true;
     } catch (cause) {
+      if (isInitialLoad) setInitialLoadFailed(true);
       setError(cause instanceof ApiError ? cause.message : 'Organization data could not be loaded.');
+    } finally {
+      if (isInitialLoad) setInitialLoading(false);
     }
   }, [canReadBranches, canReadUnits, canReadUsers, canReadAssignments]);
   useEffect(() => { void load(); }, [load]);
@@ -145,6 +154,9 @@ export default function OrganizationPage() {
     <div className="page-heading"><div><p className="eyebrow">TENANT ORGANIZATION</p><h1>Branches and assignments</h1><p className="muted">Manage locations, departments, access scope, and user assignments in this workspace.</p></div><span className="heading-count"><Building2 size={16} /> Tenant scoped</span></div>
     {notice && <div className="notice notice-success" role="status"><Check size={16} /> {notice}</div>}{error && <div className="notice notice-error" role="alert">{error}</div>}
 
+    {initialLoading ? <div className="loading-page" role="status">Loading branches, groups, and user assignments…</div>
+      : initialLoadFailed ? <div className="empty-state"><span className="empty-icon"><Building2 /></span><h2>Organization data could not be loaded</h2><p>Check your connection, then retry. No organization changes were made.</p><button className="button button-secondary" onClick={() => void load()}>Try again</button></div>
+      : <>
     {canReadBranches && <section className="surface-panel"><div className="section-heading section-heading-panel"><div><h2>Branches</h2><p>Locations and active user memberships.</p></div><GitBranch size={18} /></div>
       {canManageBranches && <form className="platform-form organization-branch-create" onSubmit={(event) => void mutate(event, '/branches', 'Branch created.')}>
         <h3>Add a branch</h3>
@@ -197,6 +209,7 @@ export default function OrganizationPage() {
     </section>}
 
     {!canReadBranches && !canReadUnits && !canReadAssignments && <div className="notice notice-error" role="alert">Your role does not have access to organization management.</div>}
+    </>}
   </main>;
 }
 

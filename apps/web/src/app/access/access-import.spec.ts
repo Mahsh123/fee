@@ -4,6 +4,7 @@ import { buildImportPreview } from '../../lib/user-import';
 const roles = [
   { id: 'role-staff', key: 'STAFF', name: 'Staff', description: null, isSystem: true, active: true, permissionsConfigured: false, permissionKeys: [] },
   { id: 'role-member', key: 'TENANT_MEMBER', name: 'Member', description: null, isSystem: true, active: true, permissionsConfigured: false, permissionKeys: [] },
+  { id: 'role-workspace-person', key: 'WORKSPACE_PERSON', name: 'Workspace Person', description: null, isSystem: true, active: true, permissionsConfigured: false, permissionKeys: [] },
 ];
 const branches = [{ id: 'branch-main', code: 'MAIN', name: 'Main Office', status: 'ACTIVE' }];
 const units = [{ id: 'unit-ops', code: 'OPS', name: 'Operations', unitType: 'DEPARTMENT', active: true }];
@@ -31,6 +32,16 @@ describe('tenant user CSV import preview', () => {
     expect(preview.rows[0]?.errors).toEqual(expect.arrayContaining(['Portal roles must be linked individually', 'Unknown or inactive branch code', 'Duplicate email in file']));
     expect(preview.rows[1]?.errors).toContain('Duplicate email in file');
     expect(preview.rows[1]?.errors).not.toContain('Unknown or inactive branch code');
+  });
+
+  it('allows a generic person portal account only when its profile number is supplied', () => {
+    const preview = buildImportPreview(
+      'firstName,lastName,email,roleKeys,branchCodes,personNumber\nAsha,Patel,asha@example.test,WORKSPACE_PERSON,MAIN,MEM-1042\nRavi,Shah,ravi@example.test,WORKSPACE_PERSON,MAIN,',
+      roles, branches, units,
+    );
+
+    expect(preview.rows[0]).toMatchObject({ personNumber: 'MEM-1042', errors: [] });
+    expect(preview.rows[1]?.errors).toContain('Profile number required for Workspace Person');
   });
 
   it('requires the identifying columns and caps each import at 100 users', () => {

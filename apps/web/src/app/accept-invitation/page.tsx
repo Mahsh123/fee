@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { ArrowRight, Check, KeyRound, MailCheck } from 'lucide-react';
 import { ApiError, apiRequest } from '../../lib/api';
@@ -14,8 +14,11 @@ export default function AcceptInvitationPage() {
   const [busy, setBusy] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState('');
+  const invitationFragmentCaptured = useRef(false);
 
   useEffect(() => {
+    if (invitationFragmentCaptured.current) return;
+    invitationFragmentCaptured.current = true;
     const value = window.location.hash.slice(1);
     setToken(value);
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);

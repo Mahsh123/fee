@@ -7,6 +7,7 @@ export interface ImportUserRow {
   firstName: string;
   lastName: string | null;
   phone: string | null;
+  personNumber: string | null;
   roleIds: string[];
   branchIds: string[];
   organizationUnitIds: string[];
@@ -40,6 +41,7 @@ export function buildImportPreview(text: string, roles: ImportRole[], branches: 
     const lastName = column(cells, 'lastName') || null;
     const email = column(cells, 'email').toLowerCase();
     const phone = column(cells, 'phone') || null;
+    const personNumber = column(cells, 'personNumber') || null;
     const errors: string[] = [];
     if (!firstName) errors.push('First name required');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('Valid email required');
@@ -48,6 +50,9 @@ export function buildImportPreview(text: string, roles: ImportRole[], branches: 
     if (!roleKeys.length) errors.push('Choose a role');
     if (rowRoles.length !== roleKeys.length) errors.push('Unknown or inactive role key');
     if (roleKeys.some((key) => key === 'STUDENT' || key === 'PARENT')) errors.push('Portal roles must be linked individually');
+    if (roleKeys.includes('WORKSPACE_PERSON') && roleKeys.length !== 1) errors.push('Workspace Person must be the only role on its portal account');
+    if (roleKeys.includes('WORKSPACE_PERSON') && !personNumber) errors.push('Profile number required for Workspace Person');
+    if (personNumber && !roleKeys.includes('WORKSPACE_PERSON')) errors.push('Profile number is only used with the Workspace Person role');
     const branchCodes = splitKeys(column(cells, 'branchCodes')).map((code) => code.toUpperCase());
     const rowBranches = branchCodes.map((code) => branchByCode.get(code)).filter((branch): branch is ImportBranch => Boolean(branch));
     if (!branchCodes.length) errors.push('Choose at least one branch');
@@ -56,7 +61,7 @@ export function buildImportPreview(text: string, roles: ImportRole[], branches: 
     const rowUnits = unitCodes.map((code) => unitByCode.get(code)).filter((unit): unit is ImportUnit => Boolean(unit));
     if (rowUnits.length !== unitCodes.length) errors.push('Unknown or inactive group code');
     return {
-      line: index + 2, email, firstName, lastName, phone,
+      line: index + 2, email, firstName, lastName, phone, personNumber,
       roleIds: rowRoles.map((role) => role.id), branchIds: rowBranches.map((branch) => branch.id), organizationUnitIds: rowUnits.map((unit) => unit.id), errors,
     };
   });

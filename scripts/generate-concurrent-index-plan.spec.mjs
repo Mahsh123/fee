@@ -136,7 +136,7 @@ test('generates the production plan for all declared tenant relation keys', asyn
   const schema = await readFile(resolve('prisma/schema.prisma'), 'utf8');
   const schemaSql = await generatePrismaSchemaSql();
   const generated = generateTenantCompositeIndexPlan({ schema, schemaSql });
-  assert.equal(generated.tenantModelCount, 93);
-  assert.equal(generated.tenantRelationCount, 111);
+  assert.equal(generated.tenantModelCount, 100);
+  assert.equal(generated.tenantRelationCount, 138);
   assert.ok(generated.indexCount >= 79 + 29);
 });

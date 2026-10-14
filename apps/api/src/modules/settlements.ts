@@ -3,7 +3,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
 import { Money } from '@fee/money';
 import { isUniqueViolation, type TransactionClient } from '@fee/database';
-import { ERROR_CODES, PERMISSIONS } from '@fee/types';
+import { ERROR_CODES, PERMISSIONS, type SystemLedgerAccountKey } from '@fee/types';
 import { AppError } from '../common/errors';
 import { AuditService, LedgerService, OutboxService } from '../common/financial';
 import { ZodValidationPipe } from '../common/http';
@@ -215,11 +215,11 @@ export class SettlementsService {
       const paymentId = record.paymentId ?? transaction?.paymentId ?? null;
       if (!paymentId) throw AppError.conflict('CAPTURE_NOT_ACCOUNTED', 'This provider event has no confirmed payment to release. Confirm the captured amount and currency first.');
       const payment = await tx.payment.findFirst({ where: { tenantId, id: paymentId } });
-      if (!payment || payment.channel !== 'ONLINE' || payment.status !== 'SUCCESS' || !payment.studentId) throw AppError.conflict('CAPTURE_CONTEXT_NOT_RELEASABLE', 'Only a successful online capture with a tenant student record can be assigned as student credit.');
+      if (!payment || payment.channel !== 'ONLINE' || payment.status !== 'SUCCESS' || (!payment.studentId && !payment.personId)) throw AppError.conflict('CAPTURE_CONTEXT_NOT_RELEASABLE', 'Only a successful online capture linked to a tenant person can be assigned as credit.');
       const existing = await tx.credit.findFirst({ where: { tenantId, paymentId: payment.id, source: 'GATEWAY_UNAPPLIED' } });
       if (existing) return { alreadyReleased: true, credit: existing };
       const amount = Money.fromString(payment.unallocatedAmount.toString(), payment.currency);
-      if (!amount.isPositive || Money.fromString(payment.allocatedAmount.toString(), payment.currency).isZero || Money.fromString(payment.refundedAmount.toString(), payment.currency).isZero) {
+      if (!amount.isPositive || !Money.fromString(payment.allocatedAmount.toString(), payment.currency).isZero || Money.fromString(payment.refundedAmount.toString(), payment.currency).isPositive) {
         throw AppError.conflict('CAPTURE_BALANCE_NOT_RELEASABLE', 'The payment no longer has its full unapplied, unrefunded capture balance. Reconcile its existing allocations or refund first.');
       }
       const systemAccounts = await this.ledger.resolveSystemAccounts(tx, tenantId);
@@ -235,11 +235,13 @@ export class SettlementsService {
       }
       const remainingLiability = creditBalance.subtract(debitBalance);
       if (!remainingLiability.equals(amount)) throw AppError.conflict('CAPTURE_LIABILITY_MISMATCH', 'The payment balance does not equal its outstanding gateway liability. Review the ledger before assigning ownership.');
-      const credit = await tx.credit.create({ data: { tenantId, branchId: payment.branchId, studentId: payment.studentId, source: 'GATEWAY_UNAPPLIED', status: 'AVAILABLE', currency: payment.currency, originalAmount: amount.toString(), allocatedAmount: '0', availableAmount: amount.toString(), paymentId: payment.id, reason: `Verified gateway capture assigned by finance operator: ${input.reason}`, createdBy: actorId ?? null } });
+      const isGenericPerson = !payment.studentId && Boolean(payment.personId);
+      const creditAccount: SystemLedgerAccountKey = isGenericPerson ? 'TENANT_PERSON_CREDIT' : 'STUDENT_CREDIT';
+      const credit = await tx.credit.create({ data: { tenantId, branchId: payment.branchId, studentId: payment.studentId, personId: isGenericPerson ? payment.personId : null, source: 'GATEWAY_UNAPPLIED', status: 'AVAILABLE', currency: payment.currency, originalAmount: amount.toString(), allocatedAmount: '0', availableAmount: amount.toString(), paymentId: payment.id, reason: `Verified gateway capture assigned by finance operator: ${input.reason}`, createdBy: actorId ?? null } });
       const posted = await this.ledger.post(tx, { tenantId, branchId: payment.branchId, currency: payment.currency, eventType: 'GATEWAY_CAPTURE_RELEASED_TO_STUDENT_CREDIT', entryDate: new Date().toISOString().slice(0, 10), lines: [
         { accountKey: 'UNAPPLIED_GATEWAY_RECEIPTS', side: 'DEBIT', amount: amount.toString(), narration: `Release held provider capture · ${payment.paymentNumber}` },
-        { accountKey: 'STUDENT_CREDIT', side: 'CREDIT', amount: amount.toString(), narration: `Operator-assigned student credit · ${payment.paymentNumber}` },
-      ], studentId: payment.studentId, paymentId: payment.id, creditId: credit.id, narration: `Gateway capture release · ${payment.paymentNumber}`, createdBy: actorId ?? null });
+        { accountKey: creditAccount, side: 'CREDIT', amount: amount.toString(), narration: `Operator-assigned person credit · ${payment.paymentNumber}` },
+      ], studentId: payment.studentId, personId: isGenericPerson ? payment.personId : null, paymentId: payment.id, creditId: credit.id, narration: `Gateway capture release · ${payment.paymentNumber}`, createdBy: actorId ?? null });
       await this.audit.record(tx, { tenantId, actorId, action: 'GATEWAY_CAPTURE_RELEASED_TO_STUDENT_CREDIT', entityType: 'Payment', entityId: payment.id, before: { unallocatedAmount: payment.unallocatedAmount.toString(), reconciliationRecordId: record.id }, after: { creditId: credit.id, studentId: payment.studentId, amount: amount.toString(), currency: payment.currency, ledgerGroupId: posted.transactionGroupId }, reason: input.reason });
       await this.outbox.publish(tx, { tenantId, eventType: 'GATEWAY_CAPTURE_RELEASED_TO_STUDENT_CREDIT', aggregateType: 'Credit', aggregateId: credit.id, payload: { paymentId: payment.id, creditId: credit.id, studentId: payment.studentId, amount: amount.toString(), currency: payment.currency, reconciliationRecordId: record.id }, actorId, requestId: this.tenantContext.requestId });
       return { alreadyReleased: false, credit };

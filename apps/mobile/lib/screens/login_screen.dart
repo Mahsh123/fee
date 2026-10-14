@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../app_config.dart';
 import '../api/wasl_api.dart';
 import '../models.dart';
 import '../widgets/brand_mark.dart';
-
-const _workspaceDefault = String.fromEnvironment('WASL_WORKSPACE_URL');
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.onSignedIn, this.initialMessage});
@@ -19,7 +18,6 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _workspace = TextEditingController(text: _workspaceDefault);
   final _email = TextEditingController();
   final _password = TextEditingController();
   TenantBranding? _tenant;
@@ -31,8 +29,15 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _notice;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _resolveWorkspace();
+    });
+  }
+
+  @override
   void dispose() {
-    _workspace.dispose();
     _email.dispose();
     _password.dispose();
     super.dispose();
@@ -45,7 +50,7 @@ class _LoginScreenState extends State<LoginScreen> {
       _notice = null;
     });
     try {
-      final api = WaslApi.forWorkspace(_workspace.text);
+      final api = WaslApi.forWorkspace(waslWorkspaceUrl);
       final tenant = await api.resolveTenant();
       if (!mounted) return false;
       setState(() {
@@ -80,7 +85,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (user.tenantSlug != _tenant!.slug) {
         await api.clearSession();
         throw const ApiException(
-          'This account belongs to a different workspace. Check the workspace URL and try again.',
+          'This account belongs to a different Madrasa. Use an account for this app.',
           statusCode: 403,
         );
       }
@@ -257,88 +262,26 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Row(
-                        children: [
-                          BrandMark(size: 52, tenant: _tenant),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  _tenant?.displayName ?? 'Wasl Madrasa',
-                                  style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w800,
-                                    color: Color(0xFF171717),
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                const Text(
-                                  'A calm place to stay connected',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFF737373),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 34),
-                      Container(
-                        padding: const EdgeInsets.all(22),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(24),
-                          color: const Color(0xFFECFDF5),
-                          border: Border.all(color: const Color(0xFFD5F2E2)),
-                        ),
-                        child: Stack(
+                      Center(
+                        child: Column(
                           children: [
-                            Positioned(
-                              right: 2,
-                              top: -5,
-                              child: Icon(
-                                Icons.auto_awesome,
-                                size: 34,
-                                color: const Color(
-                                  0xFFD6A23E,
-                                ).withValues(alpha: .8),
-                              ),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.only(right: 24),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _tenant == null
-                                        ? 'Welcome to Wasl'
-                                        : 'Welcome to ${_tenant!.displayName}',
-                                    style: TextStyle(
-                                      fontSize: 21,
-                                      height: 1.2,
-                                      fontWeight: FontWeight.w800,
-                                      color: accent,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  const Text(
-                                    'View student records and fee information through your Madrasa workspace.',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      height: 1.5,
-                                      color: Color(0xFF456357),
-                                    ),
-                                  ),
-                                ],
+                            BrandMark(size: 72, tenant: _tenant),
+                            const SizedBox(height: 14),
+                            Text(
+                              _tenant?.displayName ?? 'Madrasa',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 26,
+                                height: 1.15,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: -.3,
+                                color: accent,
                               ),
                             ),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 26),
+                      const SizedBox(height: 32),
                       SegmentedButton<bool>(
                         segments: const [
                           ButtonSegment(
@@ -367,32 +310,6 @@ class _LoginScreenState extends State<LoginScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            TextFormField(
-                              controller: _workspace,
-                              keyboardType: TextInputType.url,
-                              textInputAction: TextInputAction.next,
-                              autocorrect: false,
-                              decoration: InputDecoration(
-                                labelText: 'Madrasa workspace URL',
-                                hintText: 'school.example.org',
-                                prefixIcon: const Icon(Icons.language_rounded),
-                                suffixIcon: IconButton(
-                                  tooltip: 'Check workspace',
-                                  onPressed: _busy ? null : _resolveWorkspace,
-                                  icon: const Icon(Icons.arrow_forward_rounded),
-                                ),
-                              ),
-                              validator: (value) =>
-                                  value == null || value.trim().isEmpty
-                                      ? 'Enter your Madrasa workspace URL.'
-                                      : null,
-                              onChanged: (_) => setState(() {
-                                _tenant = null;
-                                _api = null;
-                              }),
-                              onFieldSubmitted: (_) => _resolveWorkspace(),
-                            ),
-                            const SizedBox(height: 15),
                             TextFormField(
                               controller: _email,
                               keyboardType: TextInputType.emailAddress,
@@ -474,25 +391,16 @@ class _LoginScreenState extends State<LoginScreen> {
                           child: const Text('Forgot password?'),
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      const Row(
-                        children: [
-                          Icon(
-                            Icons.shield_outlined,
-                            size: 16,
-                            color: Color(0xFF737373),
+                      const SizedBox(height: 22),
+                      const Center(
+                        child: Text(
+                          'Powered by Wasl',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xFF8A938F),
                           ),
-                          SizedBox(width: 7),
-                          Expanded(
-                            child: Text(
-                              'Your workspace and account permissions are verified by Wasl.',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Color(0xFF737373),
-                              ),
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     ],
                   ),

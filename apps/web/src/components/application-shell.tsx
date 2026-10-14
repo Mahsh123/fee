@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { PLATFORM_SYSTEM_TENANT_SLUG, PERMISSIONS, organizationCategory } from '@fee/types';
-import { Building2, GraduationCap, LayoutDashboard, LogOut, ReceiptText, Settings2, UsersRound, WalletCards, SlidersHorizontal, RotateCcw, CircleDollarSign, CalendarClock, ShieldCheck, FileText, BarChart3, Scale, BellRing, BadgePercent, GitBranch, UserRound, Menu, X, ChevronDown, ChevronRight, type LucideIcon } from 'lucide-react';
+import { Building2, GraduationCap, LayoutDashboard, LogOut, ReceiptText, Settings2, UsersRound, WalletCards, SlidersHorizontal, RotateCcw, CircleDollarSign, CalendarClock, ShieldCheck, FileText, BarChart3, Scale, BellRing, BadgePercent, GitBranch, UserRound, ClipboardCheck, Menu, X, ChevronDown, ChevronRight, type LucideIcon } from 'lucide-react';
 import { platformSignInHref, signOut, tenantSignInHref } from '../lib/api';
 import { useSession } from './session-provider';
 import { useTenant } from './tenant-provider';
@@ -17,6 +17,7 @@ type NavigationItem = { section: string; href: string; label: string; icon: Luci
 const coreTenantNavigation: NavigationItem[] = [
   { section: 'WORKSPACE', href: '/', label: 'Overview', icon: LayoutDashboard },
   { section: 'ORGANIZATION & ACCESS', href: '/organization', label: 'Branches and groups', icon: GitBranch, requiredModule: 'BRANCHES', requiredPermissions: [PERMISSIONS.BRANCH_READ, PERMISSIONS.BRANCH_MANAGE, PERMISSIONS.ORGANIZATION_UNIT_READ, PERMISSIONS.ORGANIZATION_UNIT_MANAGE, PERMISSIONS.ASSIGNMENT_READ, PERMISSIONS.ASSIGNMENT_MANAGE] },
+  { section: 'ORGANIZATION & ACCESS', href: '/people', label: 'People directory', icon: UsersRound, requiredModule: 'USERS', requiredPermissions: [PERMISSIONS.USER_READ, PERMISSIONS.USER_CREATE, PERMISSIONS.USER_UPDATE] },
   { section: 'ORGANIZATION & ACCESS', href: '/access', label: 'Users and roles', icon: UsersRound, requiredModule: 'USERS', requiredPermissions: [PERMISSIONS.USER_READ, PERMISSIONS.ROLE_READ, PERMISSIONS.PERMISSION_READ] },
   { section: 'OPERATIONS', href: '/reports', label: 'Reports', icon: BarChart3, requiredModule: 'REPORTS', requiredPermissions: [PERMISSIONS.REPORT_READ] },
   { section: 'OPERATIONS', href: '/notifications', label: 'Notifications', icon: BellRing, requiredModule: 'NOTIFICATIONS', requiredPermissions: [PERMISSIONS.TENANT_SETTINGS_READ] },
@@ -30,6 +31,9 @@ const moduleNavigation: Record<string, NavigationItem[]> = {
     { section: 'ADMISSIONS', href: '/students', label: 'Students', icon: UsersRound, requiredPermissions: [PERMISSIONS.STUDENT_READ] },
     { section: 'ADMISSIONS', href: '/admissions', label: 'Admissions', icon: GraduationCap, requiredPermissions: [PERMISSIONS.ADMISSION_READ] },
     { section: 'ADMISSIONS', href: '/academic', label: 'Academic structure', icon: Building2, requiredPermissions: [PERMISSIONS.STUDENT_READ, PERMISSIONS.ORGANIZATION_UNIT_READ, PERMISSIONS.ASSIGNMENT_READ] },
+  ],
+  ATTENDANCE: [
+    { section: 'ATTENDANCE', href: '/attendance', label: 'Attendance', icon: ClipboardCheck, requiredPermissions: [PERMISSIONS.ATTENDANCE_READ] },
   ],
   FEES: [
     { section: 'FEES', href: '/sponsors', label: 'Sponsors', icon: Building2, requiredPermissions: [PERMISSIONS.SPONSOR_READ] },
@@ -80,7 +84,7 @@ export function ApplicationShell({ children }: Readonly<{ children: React.ReactN
   const loginRoute = path === '/login';
   const publicAuthRoute = ['/login', '/register', '/accept-invitation', '/verify-email-change', '/forgot-password', '/reset-password'].includes(path);
   const publicLandingRoute = path === '/';
-  const portalOnly = Boolean(user?.roles.length && user.roles.every((role) => role === 'STUDENT' || role === 'PARENT'));
+  const portalOnly = Boolean(user?.roles.length && user.roles.every((role) => role === 'STUDENT' || role === 'PARENT' || role === 'WORKSPACE_PERSON'));
   const isPlatformHost = tenant.kind === 'platform';
   const configuredTenantNavigation = [
     ...coreTenantNavigation.filter((item) => (!item.requiredModule || tenant.kind !== 'tenant' || tenant.enabledModules.includes(item.requiredModule)) && (!item.requiredPermissions || item.requiredPermissions.some((permission) => user?.permissions.includes(permission)))),
@@ -90,9 +94,12 @@ export function ApplicationShell({ children }: Readonly<{ children: React.ReactN
     ? configuredTenantNavigation.filter((item) => item.href === '/portal' || item.href === '/profile')
     : configuredTenantNavigation.filter((item) => item.href !== '/portal' && hasAnyPermission(user?.permissions, item.requiredPermissions));
   const category = tenant.kind === 'tenant' ? organizationCategory(tenant.organizationCategory) : null;
-  const moduleEnabledNavigation = tenantNavigationForUser.map((item) => item.href === '/organization' && category
-    ? { ...item, label: category.groupLabel === 'Batches' || category.groupLabel === 'Batches and groups' ? 'Branches and batches' : category.groupLabel === 'Departments and groups' ? 'Branches and departments' : category.groupLabel.startsWith('Classes') ? 'Branches and classes' : 'Branches and groups' }
-    : item);
+  const moduleEnabledNavigation = tenantNavigationForUser.map((item) => {
+    if (!category) return item;
+    if (item.href === '/people') return { ...item, label: `${category.peopleLabel} directory` };
+    if (item.href === '/organization') return { ...item, label: category.groupLabel === 'Batches' || category.groupLabel === 'Batches and groups' ? 'Branches and batches' : category.groupLabel === 'Departments and groups' ? 'Branches and departments' : category.groupLabel.startsWith('Classes') ? 'Branches and classes' : 'Branches and groups' };
+    return item;
+  });
   const visibleNavigation = isPlatformHost ? platformNavigation : moduleEnabledNavigation;
   const navigationGroups = visibleNavigation.reduce<Array<{ section: string; items: typeof visibleNavigation[number][] }>>((groups, item) => {
     const current = groups.at(-1);
@@ -176,6 +183,12 @@ export function ApplicationShell({ children }: Readonly<{ children: React.ReactN
     if (!event.defaultPrevented) event.currentTarget.closest('details')?.removeAttribute('open');
   }
 
+  // Public auth links can carry one-time credentials in the URL fragment. Keep
+  // the same page tree mounted before and after tenant lookup so route effects
+  // capture the fragment once without losing it when the host resolves.
+  if (tenant.kind === 'loading' && publicAuthRoute) return loginRoute
+    ? <main id="main-content" className="auth-frame">{children}</main>
+    : <>{children}</>;
   if (tenant.kind === 'loading') return <main id="main-content" className="auth-frame"><div className="loading-page" role="status">Finding this workspace…</div></main>;
   if (tenant.kind === 'error') return <main id="main-content" className="auth-frame"><section className="tenant-unavailable"><span className="empty-icon"><Building2 /></span><p className="eyebrow">ORGANIZATION WORKSPACE</p><h1>Workspace information is unavailable</h1><p>We could not reach the workspace service. Check your connection and try again.</p><button className="button button-primary" onClick={() => window.location.reload()}>Try again</button></section></main>;
   if ((tenant.kind === 'unknown' || tenant.kind === 'inactive') && !publicLandingRoute && !publicAuthRoute) {

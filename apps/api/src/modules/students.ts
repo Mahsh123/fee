@@ -85,9 +85,12 @@ export class StudentsService {
   async listStudents(tenantId: string, rawQuery: Record<string, unknown>) {
     this.assertTenant(tenantId);
     const query = parseListQuery(rawQuery, { allowedSortFields: ['status', 'firstName', 'lastName', 'rollNumber'] });
+    const branchId = typeof rawQuery.branchId === 'string' && rawQuery.branchId.trim() ? rawQuery.branchId.trim() : undefined;
+    if (branchId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(branchId)) throw AppError.validation('The branch ID must be a valid identifier.');
     const where: Prisma.StudentWhereInput = {
       tenantId,
       deletedAt: null,
+      ...(branchId ? { branchId } : {}),
       ...(query.status?.length ? { status: { in: query.status as StudentStatus[] } } : {}),
       ...buildSearchFilter(query.search, ['admissionNumber', 'rollNumber', 'firstName', 'lastName', 'email', 'phone']),
     };
@@ -121,10 +124,18 @@ export class StudentsService {
       await this.validateStudentReferences(tx, tenantId, input);
       const admissionNumber = await this.sequences.allocate(tx, { tenantId, kind: 'STUDENT' });
       const id = randomUUID();
+      const personId = randomUUID();
+      await tx.tenantPerson.create({ data: {
+        id: personId, tenantId, personNumber: admissionNumber, typeKey: 'STUDENT', typeLabel: 'Student',
+        firstName: input.firstName, middleName: clean(input.middleName), lastName: clean(input.lastName),
+        email: emailValue(input.email), phone: clean(input.phone), branchId: clean(input.branchId),
+        status: 'ACTIVE', createdBy: actorId ?? null, updatedBy: actorId ?? null,
+      } });
       const student = await tx.student.create({
         data: {
           id,
           tenantId,
+          personId,
           admissionNumber,
           rollNumber: clean(input.rollNumber),
           firstName: input.firstName,
@@ -206,6 +217,18 @@ export class StudentsService {
       if (update.count !== 1) throw AppError.conflict(ERROR_CODES.CONFLICT, 'This student changed while you were editing. Reload and try again.');
       const updated = await tx.student.findFirst({ where: { id: studentId, tenantId, deletedAt: null } });
       if (!updated) throw AppError.notFound('Student');
+      if (updated.personId) await tx.tenantPerson.updateMany({
+        where: { tenantId, id: updated.personId, deletedAt: null },
+        data: {
+          ...(input.firstName !== undefined ? { firstName: input.firstName } : {}),
+          ...(input.middleName !== undefined ? { middleName: clean(input.middleName) } : {}),
+          ...(input.lastName !== undefined ? { lastName: clean(input.lastName) } : {}),
+          ...(input.email !== undefined ? { email: emailValue(input.email) } : {}),
+          ...(input.phone !== undefined ? { phone: clean(input.phone) } : {}),
+          ...(input.branchId !== undefined ? { branchId: clean(input.branchId) } : {}),
+          updatedBy: actorId ?? null,
+        },
+      });
       await this.audit.record(tx, {
         tenantId,
         actorId,
@@ -244,6 +267,7 @@ export class StudentsService {
       if (changed.count !== 1) throw AppError.conflict(ERROR_CODES.CONFLICT, 'This student changed while you were editing. Reload and try again.');
       const updated = await tx.student.findFirst({ where: { id: studentId, tenantId, deletedAt: null } });
       if (!updated) throw AppError.notFound('Student');
+      if (updated.personId) await tx.tenantPerson.updateMany({ where: { tenantId, id: updated.personId, deletedAt: null }, data: { status: personStatusForStudent(nextStatus), updatedBy: actorId ?? null } });
       await this.audit.record(tx, {
         tenantId,
         actorId,
@@ -878,6 +902,12 @@ function dateValue(value: string | null | undefined): Date | null | undefined {
 
 function decimalValue(value: string | null | undefined): string | null | undefined {
   return clean(value);
+}
+
+function personStatusForStudent(status: StudentStatus): 'ACTIVE' | 'SUSPENDED' | 'ARCHIVED' {
+  if (status === 'ACTIVE' || status === 'PROSPECT') return 'ACTIVE';
+  if (status === 'ON_LEAVE' || status === 'SUSPENDED') return 'SUSPENDED';
+  return 'ARCHIVED';
 }
 
 function jsonValue(value: Record<string, unknown> | null | undefined): Prisma.InputJsonValue | typeof Prisma.JsonNull | undefined {

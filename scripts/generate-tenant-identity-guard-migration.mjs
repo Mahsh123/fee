@@ -6,9 +6,14 @@ import { buildTenantIdentityGuardManifest } from './tenant-identity-guard-manife
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const schemaPath = resolve(root, 'prisma/schema.prisma');
 const baseMigrationPath = resolve(root, 'prisma/migrations/20261003000400_tenant_identity_immutability/migration.sql');
-const previousExtensionMigrationPath = resolve(root, 'prisma/migrations/20261003000900_audit_tenant_identity_immutability/migration.sql');
-const extensionMigrationDirectory = resolve(root, 'prisma/migrations/20261006000400_generic_saas_identity_guards');
-const extensionMigrationPath = resolve(extensionMigrationDirectory, 'migration.sql');
+const extensionMigrationPaths = [
+  resolve(root, 'prisma/migrations/20261003000900_audit_tenant_identity_immutability/migration.sql'),
+  resolve(root, 'prisma/migrations/20261006000400_generic_saas_identity_guards/migration.sql'),
+  resolve(root, 'prisma/migrations/20261012000300_tenant_identity_guard_extensions/migration.sql'),
+  resolve(root, 'prisma/migrations/20261013000400_tenant_person_identity_guard_extensions/migration.sql'),
+];
+const generatedExtensionDirectory = resolve(root, 'prisma/migrations/20261013000800_fee_assignment_cycle_identity_guards');
+const generatedExtensionPath = resolve(generatedExtensionDirectory, 'migration.sql');
 
 function quoteIdentifier(value) {
   return '"' + value.replaceAll('"', '""') + '"';
@@ -105,26 +110,29 @@ async function main() {
   if (baseManifest.triggers.length !== baseTables.size) throw new Error('Base tenant identity migration trigger inventory is not represented by the current schema');
   const expectedBase = renderTenantIdentityGuardMigration(baseManifest);
   if (baseSql !== expectedBase) throw new Error('Base tenant identity migration differs from the immutable generated inventory');
-  const previousExtensionSql = await readFile(previousExtensionMigrationPath, 'utf8');
-  const previousExtensionTables = baseGuardedTables(previousExtensionSql);
-  if ([...previousExtensionTables].some((table) => !availableTables.has(table) || baseTables.has(table))) {
-    throw new Error('The previous forward tenant identity migration references an unknown or already guarded table');
+  const guardedTables = new Set(baseTables);
+  for (const migrationPath of extensionMigrationPaths) {
+    const migrationSql = await readFile(migrationPath, 'utf8');
+    const migrationTables = baseGuardedTables(migrationSql);
+    if ([...migrationTables].some((table) => !availableTables.has(table) || guardedTables.has(table))) {
+      throw new Error('A forward tenant identity migration references an unknown or already guarded table: ' + migrationPath);
+    }
+    const expectedMigration = renderTenantIdentityGuardExtensionMigration({
+      ...manifest,
+      triggers: manifest.triggers.filter((trigger) => migrationTables.has(trigger.table)),
+    });
+    if (migrationSql !== expectedMigration) throw new Error('A forward tenant identity migration differs from its immutable inventory: ' + migrationPath);
+    for (const table of migrationTables) guardedTables.add(table);
   }
-  const expectedPreviousExtension = renderTenantIdentityGuardExtensionMigration({
-    ...manifest,
-    triggers: manifest.triggers.filter((trigger) => previousExtensionTables.has(trigger.table)),
-  });
-  if (previousExtensionSql !== expectedPreviousExtension) throw new Error('Previous forward tenant identity migration differs from its immutable inventory');
-  const guardedTables = new Set([...baseTables, ...previousExtensionTables]);
   const extensionManifest = { ...manifest, triggers: manifest.triggers.filter((trigger) => !guardedTables.has(trigger.table)) };
   const expectedExtension = renderTenantIdentityGuardExtensionMigration(extensionManifest);
   if (write) {
-    await mkdir(extensionMigrationDirectory, { recursive: true });
-    await writeFile(extensionMigrationPath, expectedExtension, 'utf8');
+    await mkdir(generatedExtensionDirectory, { recursive: true });
+    await writeFile(generatedExtensionPath, expectedExtension, 'utf8');
     console.log('Generated forward tenant identity guards for ' + extensionManifest.triggers.length + ' added tables.');
     return;
   }
-  const currentExtension = await readFile(extensionMigrationPath, 'utf8');
+  const currentExtension = await readFile(generatedExtensionPath, 'utf8');
   if (currentExtension !== expectedExtension) throw new Error('Forward tenant identity guards differ from the generated manifest.');
   console.log('Base and forward tenant identity migrations match the generated manifest.');
 }

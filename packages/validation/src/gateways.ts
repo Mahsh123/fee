@@ -46,7 +46,8 @@ export const updateGatewaySchema = gatewayBaseSchema.omit({ provider: true, envi
 
 export const createPaymentOrderSchema = z.object({
   idempotencyKey: uuid,
-  studentId: uuid,
+  studentId: uuid.optional(),
+  personId: uuid.optional(),
   methodId: uuid,
   amount: money,
   demandItemIds: z.array(uuid).min(1).max(500).optional(),
@@ -58,6 +59,7 @@ export const createPaymentOrderSchema = z.object({
   payerGuardianId: uuid.nullable().optional(),
   environment: z.enum(GATEWAY_ENVIRONMENTS).optional(),
 }).superRefine((input, context) => {
+  if (Boolean(input.studentId) === Boolean(input.personId)) context.addIssue({ code: 'custom', path: ['personId'], message: 'Choose exactly one student or person profile.' });
   if (input.payerType === 'SPONSOR' && !input.payerSponsorId) context.addIssue({ code: 'custom', path: ['payerSponsorId'], message: 'Choose the sponsor that made this payment.' });
   if (input.payerType !== 'SPONSOR' && input.payerSponsorId) context.addIssue({ code: 'custom', path: ['payerSponsorId'], message: 'A sponsor may only be attached to a sponsor payment.' });
   const guardianPayer = input.payerType === 'PARENT' || input.payerType === 'GUARDIAN';

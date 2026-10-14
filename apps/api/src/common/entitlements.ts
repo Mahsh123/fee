@@ -9,13 +9,11 @@ export async function resolveTenantModuleAccess(db: ModuleAccessDatabase, tenant
   const tenant = await db.tenant.findFirst({ where: { id: tenantId }, select: { enabledModules: true } });
   if (!tenant) return null;
 
-  const [subscription, overrides] = await Promise.all([
-    db.tenantSubscription.findFirst({
-      where: { tenantId, isCurrent: true },
-      select: { status: true, plan: { select: { modules: { select: { moduleKey: true, enabled: true } } } } },
-    }),
-    db.tenantModuleOverride.findMany({ where: { tenantId }, select: { moduleKey: true, enabled: true } }),
-  ]);
+  const subscription = await db.tenantSubscription.findFirst({
+    where: { tenantId, isCurrent: true },
+    select: { status: true, plan: { select: { modules: { select: { moduleKey: true, enabled: true } } } } },
+  });
+  const overrides = await db.tenantModuleOverride.findMany({ where: { tenantId }, select: { moduleKey: true, enabled: true } });
 
   // A tenant with no subscription history is a legacy workspace and may still
   // use the old module projection. Once it has had a subscription, losing the

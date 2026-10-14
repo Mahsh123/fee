@@ -67,19 +67,35 @@ export class RequestIdMiddleware implements NestMiddleware {
  */
 @Injectable()
 export class ZodValidationPipe implements PipeTransform {
-  constructor(private readonly schema: ZodType) {}
+  constructor(
+    private readonly schema: ZodType,
+    private readonly argumentType: ArgumentMetadata['type'] = 'body',
+  ) {}
 
-  transform(value: unknown, _metadata: ArgumentMetadata): unknown {
+  transform(value: unknown, metadata: ArgumentMetadata): unknown {
+    // A method-scoped Nest pipe runs for every decorated parameter, including
+    // route ids, the tenant context, and request/response objects. Validation
+    // schemas here describe one HTTP argument only; applying a body schema to
+    // those unrelated values makes valid mutation routes fail before reaching
+    // their service. Query schemas opt in explicitly at the call site.
+    if (metadata.type !== this.argumentType) return value;
+
     const result = this.schema.safeParse(value);
     if (!result.success) {
+      const details = result.error.issues.map((issue) => ({
+        path: issue.path.join('.') || '(body)',
+        message: issue.message,
+        code: issue.code,
+      }));
       throw new AppError({
         code: 'VALIDATION_FAILED',
-        message: 'The request payload is invalid.',
-        details: result.error.issues.map((issue) => ({
-          path: issue.path.join('.') || '(body)',
-          message: issue.message,
-          code: issue.code,
-        })),
+        message: `The request payload is invalid: ${details.map((issue) => `${issue.path}: ${issue.message}`).join('; ')}`,
+        details,
+        context: {
+          argumentType: metadata.type,
+          expectedArgumentType: this.argumentType,
+          issues: result.error.issues.map(({ path, code }) => ({ path: path.join('.'), code })),
+        },
       });
     }
     return result.data;

@@ -44,6 +44,7 @@ type InstallmentShare = {
 export type PayerSelection = { type: PayerType; sponsorId?: string | null; payerGuardianId?: string | null; payerName?: string | null };
 type ResponsibilityShare = { id: string | null; payerType: PayerType; payerName: string; payerSponsorId: string | null; payerGuardianId: string | null; priority: number; amount: Money; actualOutstanding: Money; reserved: Money; outstanding: Money };
 type AllocationDraft = { item: OpenDemandItem; amount: Money; responsibilityId: string | null; installmentShare?: InstallmentShare };
+type PaymentSubject = { id: string; studentId: string | null; personId: string | null; branchId: string | null; firstName: string; middleName: string | null; lastName: string | null; admissionNumber: string | null; personNumber: string | null; typeLabel: string };
 type OpenDemandItem = {
   id: string;
   tenantId: string;
@@ -63,8 +64,10 @@ type OpenDemandItem = {
   demand: {
     id: string;
     branchId: string | null;
-    studentId: string;
+    studentId: string | null;
+    personId: string | null;
     demandNumber: string;
+    financialPeriod: string | null;
     dueDate: Date;
     issueDate: Date;
     currency: string;
@@ -138,11 +141,21 @@ export class PaymentsService {
       if (method.requiresReference && !input.referenceNumber?.trim()) throw AppError.validation('This payment method requires a reference number.');
       if (method.requiresInstrument && !input.instrumentNumber?.trim()) throw AppError.validation('This payment method requires an instrument number.');
 
-      const student = await tx.student.findFirst({ where: { tenantId, id: input.studentId }, select: { id: true, branchId: true, firstName: true, middleName: true, lastName: true, admissionNumber: true } });
-      if (!student) throw AppError.notFound('Student');
-      const payer = payerSelection(input);
-      await this.assertPortalPayerAccess(tx, tenantId, student.id, payer);
-      const openItems = await this.openItems(tx, tenantId, student.id, payer);
+      const student = input.studentId ? await tx.student.findFirst({ where: { tenantId, id: input.studentId, deletedAt: null }, select: { id: true, branchId: true, firstName: true, middleName: true, lastName: true, admissionNumber: true } }) : null;
+      const person = input.personId ? await tx.tenantPerson.findFirst({ where: { tenantId, id: input.personId, status: 'ACTIVE', deletedAt: null }, select: { id: true, branchId: true, firstName: true, middleName: true, lastName: true, personNumber: true, typeLabel: true } }) : null;
+      if (!student && !person) throw AppError.notFound(input.personId ? 'Person' : 'Student');
+      const subject: PaymentSubject = student
+        ? { id: student.id, studentId: student.id, personId: null, branchId: student.branchId, firstName: student.firstName, middleName: student.middleName, lastName: student.lastName, admissionNumber: student.admissionNumber, personNumber: null, typeLabel: 'Student' }
+        : { id: person!.id, studentId: null, personId: person!.id, branchId: person!.branchId, firstName: person!.firstName, middleName: person!.middleName, lastName: person!.lastName, admissionNumber: null, personNumber: person!.personNumber, typeLabel: person!.typeLabel };
+      const payer = payerSelection({ ...input, payerType: input.payerType ?? (subject.personId ? 'MEMBER' : 'STUDENT') });
+      if (subject.personId) {
+        if (input.payerGuardianId) throw AppError.validation('A guardian cannot be attached to a generic person payment.');
+        await this.assertPortalPersonAccess(tx, tenantId, subject.personId);
+      } else {
+        await this.assertPortalPayerAccess(tx, tenantId, subject.studentId!, payer);
+      }
+      const subjectField = subject.personId ? 'personId' : 'studentId';
+      const openItems = await this.openItems(tx, tenantId, subject.id, payer, undefined, subjectField);
       const selectedItems = this.selectItems(openItems, input.demandItemIds);
       const balance = selectedItems.reduce((sum, entry) => sum.add(this.payerItemBalance(entry, payer)), Money.zero(currency));
       if (balance.isZero && input.demandItemIds?.length) throw AppError.conflict('NO_OPEN_BALANCE', 'The selected demand items have no amount left to pay.');
@@ -166,7 +179,7 @@ export class PaymentsService {
             status: 'PENDING',
             entityType: 'PaymentCollection',
             payload: input as unknown as Prisma.InputJsonValue,
-            summary: `Approve partial collection of ${currency} ${amount.format()} for ${student.firstName} ${student.lastName}`,
+            summary: `Approve partial collection of ${currency} ${amount.format()} for ${subject.firstName} ${subject.lastName ?? ''}`,
             amount: amount.toString(),
             currency,
             requestedBy,
@@ -174,14 +187,14 @@ export class PaymentsService {
         });
         const response = { requiresApproval: true, approvalRequestId: approval.id, status: approval.status, amount: approval.amount, currency };
         await this.idempotency.complete(tx, { id: reservation.id, responseCode: 202, responseBody: response, resourceId: approval.id, resourceType: 'ApprovalRequest' });
-        await this.audit.record(tx, { tenantId, actorId, action: 'PAYMENT_COLLECTION_APPROVAL_REQUESTED', entityType: 'ApprovalRequest', entityId: approval.id, after: { amount: amount.toString(), currency, studentId: student.id } });
-        await this.outbox.publish(tx, { tenantId, eventType: 'PAYMENT_COLLECTION_APPROVAL_REQUESTED', aggregateType: 'ApprovalRequest', aggregateId: approval.id, payload: { approvalRequestId: approval.id, studentId: student.id, amount: amount.toString(), currency }, actorId, requestId: this.tenantContext.requestId });
+        await this.audit.record(tx, { tenantId, actorId, action: 'PAYMENT_COLLECTION_APPROVAL_REQUESTED', entityType: 'ApprovalRequest', entityId: approval.id, after: { amount: amount.toString(), currency, studentId: subject.studentId, personId: subject.personId } });
+        await this.outbox.publish(tx, { tenantId, eventType: 'PAYMENT_COLLECTION_APPROVAL_REQUESTED', aggregateType: 'ApprovalRequest', aggregateId: approval.id, payload: { approvalRequestId: approval.id, studentId: subject.studentId, personId: subject.personId, amount: amount.toString(), currency }, actorId, requestId: this.tenantContext.requestId });
         return response;
       }
       const minimum = settings?.minimumPartialAmount ? Money.fromString(settings.minimumPartialAmount.toString(), currency) : null;
       if (partial && minimum && amount.lessThan(minimum)) throw AppError.validation(`A partial payment must be at least ${minimum.format()}.`);
 
-      const response = await this.recordManualPayment(tx, tenantId, input, actorId ?? null, null, method, student, selectedItems, amount, balance, overpaymentPolicy, settings?.allowAdvancePayment ?? false);
+      const response = await this.recordManualPayment(tx, tenantId, input, actorId ?? null, null, method, subject, selectedItems, amount, balance, overpaymentPolicy, settings?.allowAdvancePayment ?? false);
       await this.idempotency.complete(tx, { id: reservation.id, responseCode: 201, responseBody: response, resourceId: response.payment.id, resourceType: 'Payment' });
       return response;
     });
@@ -233,33 +246,39 @@ export class PaymentsService {
     return { ...payment, student, allocations: allocationDetails, receipt: receiptDetails };
   }
 
-  async recordGatewayPayment(tx: TransactionClient, input: { tenantId: string; order: { id: string; branchId: string | null; studentId: string | null; methodId: string | null; amount: Prisma.Decimal; currency: string; intendedDemandItemIds: string[]; payerType: PayerType; payerName: string | null; payerPhone: string | null; payerEmail: string | null; payerSponsorId: string | null; payerGuardianId: string | null }; provider: GatewayProvider; gatewayConfigId: string; providerTxnId: string; capturedAmount?: string; holdUnapplied?: boolean; actorId?: string | null }) {
-    if (!input.order.studentId || !input.order.methodId) throw AppError.conflict('PAYMENT_ORDER_CONTEXT_MISSING', 'The payment order has no student or configured payment method.');
+  async recordGatewayPayment(tx: TransactionClient, input: { tenantId: string; order: { id: string; branchId: string | null; studentId: string | null; personId?: string | null; methodId: string | null; amount: Prisma.Decimal; currency: string; intendedDemandItemIds: string[]; payerType: PayerType; payerName: string | null; payerPhone: string | null; payerEmail: string | null; payerSponsorId: string | null; payerGuardianId: string | null }; provider: GatewayProvider; gatewayConfigId: string; providerTxnId: string; capturedAmount?: string; holdUnapplied?: boolean; actorId?: string | null }) {
+    if ((!input.order.studentId && !input.order.personId) || (input.order.studentId && input.order.personId) || !input.order.methodId) throw AppError.conflict('PAYMENT_ORDER_CONTEXT_MISSING', 'The payment order has no unique person or configured payment method.');
     let holdUnapplied = input.holdUnapplied === true;
-    const [settings, method, student] = await Promise.all([
+    const [settings, method, student, person] = await Promise.all([
       tx.tenantSettings.findUnique({ where: { tenantId: input.tenantId } }),
       tx.paymentMethod.findFirst({ where: { tenantId: input.tenantId, id: input.order.methodId } }),
-      tx.student.findFirst({ where: { tenantId: input.tenantId, id: input.order.studentId }, select: { id: true, branchId: true, firstName: true, middleName: true, lastName: true, admissionNumber: true, deletedAt: true } }),
+      input.order.studentId ? tx.student.findFirst({ where: { tenantId: input.tenantId, id: input.order.studentId }, select: { id: true, branchId: true, firstName: true, middleName: true, lastName: true, admissionNumber: true, deletedAt: true } }) : null,
+      input.order.personId ? tx.tenantPerson.findFirst({ where: { tenantId: input.tenantId, id: input.order.personId }, select: { id: true, branchId: true, firstName: true, middleName: true, lastName: true, personNumber: true, typeLabel: true, deletedAt: true, status: true } }) : null,
     ]);
     if (!method) throw AppError.conflict('PAYMENT_METHOD_CONTEXT_MISSING', 'The configured payment method for this captured payment is unavailable.');
-    if (!student) throw AppError.conflict('PAYMENT_ORDER_STUDENT_UNAVAILABLE', 'The student is no longer available for payment.');
+    if (!student && !person) throw AppError.conflict('PAYMENT_ORDER_PERSON_UNAVAILABLE', 'The person is no longer available for payment.');
+    const subject: PaymentSubject = student
+      ? { id: student.id, studentId: student.id, personId: null, branchId: student.branchId, firstName: student.firstName, middleName: student.middleName, lastName: student.lastName, admissionNumber: student.admissionNumber, personNumber: null, typeLabel: 'Student' }
+      : { id: person!.id, studentId: null, personId: person!.id, branchId: person!.branchId, firstName: person!.firstName, middleName: person!.middleName, lastName: person!.lastName, admissionNumber: null, personNumber: person!.personNumber, typeLabel: person!.typeLabel };
     const currency = input.order.currency;
-    if (!settings?.currency || currency !== settings.currency || student.deletedAt) holdUnapplied = true;
+    if (!settings?.currency || currency !== settings.currency || (student?.deletedAt ?? person?.deletedAt) || (person && person.status !== 'ACTIVE')) holdUnapplied = true;
     const amount = Money.fromString(input.capturedAmount ?? input.order.amount.toString(), currency);
     const payer = payerSelection(input.order);
-    if (!holdUnapplied) await this.assertPortalPayerAccess(tx, input.tenantId, student.id, payer);
-    if (!holdUnapplied && payer.payerGuardianId) {
+    if (!holdUnapplied && subject.studentId) await this.assertPortalPayerAccess(tx, input.tenantId, subject.studentId, payer);
+    if (!holdUnapplied && subject.personId) await this.assertPortalPersonAccess(tx, input.tenantId, subject.personId);
+    if (!holdUnapplied && payer.payerGuardianId && subject.studentId) {
       const [guardian, link] = await Promise.all([
         tx.guardian.findFirst({ where: { tenantId: input.tenantId, id: payer.payerGuardianId, deletedAt: null }, select: { id: true } }),
-        tx.studentGuardian.findFirst({ where: { tenantId: input.tenantId, guardianId: payer.payerGuardianId, studentId: student.id }, select: { id: true } }),
+        tx.studentGuardian.findFirst({ where: { tenantId: input.tenantId, guardianId: payer.payerGuardianId, studentId: subject.studentId }, select: { id: true } }),
       ]);
       if (!guardian || !link) holdUnapplied = true;
-    }
+    } else if (payer.payerGuardianId) holdUnapplied = true;
     if (!holdUnapplied && payer.type === 'SPONSOR' && payer.sponsorId) {
       const sponsor = await tx.sponsor.findFirst({ where: { tenantId: input.tenantId, id: payer.sponsorId }, select: { id: true } });
       if (!sponsor) holdUnapplied = true;
     }
-    const openItems = holdUnapplied ? [] : await this.openItems(tx, input.tenantId, student.id, payer, input.order.id);
+    const subjectField = subject.personId ? 'personId' : 'studentId';
+    const openItems = holdUnapplied ? [] : await this.openItems(tx, input.tenantId, subject.id, payer, input.order.id, subjectField);
     const selectedItems = holdUnapplied ? [] : this.selectItems(openItems, input.order.intendedDemandItemIds.length ? input.order.intendedDemandItemIds : undefined);
     const balance = holdUnapplied ? Money.zero(currency) : selectedItems.reduce((sum, item) => sum.add(this.payerItemBalance(item, payer)), Money.zero(currency));
     const overBalance = !holdUnapplied && amount.greaterThan(balance);
@@ -272,11 +291,11 @@ export class PaymentsService {
     const result = await this.recordManualPayment(
       tx,
       input.tenantId,
-      { idempotencyKey: randomUUID(), studentId: student.id, methodId: method.id, amount: amount.toString(), currency, demandItemIds: input.order.intendedDemandItemIds.length ? input.order.intendedDemandItemIds : undefined, referenceNumber: input.providerTxnId, payerType: input.order.payerType, payerName: input.order.payerName, payerPhone: input.order.payerPhone, payerEmail: input.order.payerEmail, payerSponsorId: input.order.payerSponsorId, payerGuardianId: input.order.payerGuardianId } as ManualPaymentInput,
+      { idempotencyKey: randomUUID(), studentId: subject.studentId ?? undefined, personId: subject.personId ?? undefined, methodId: method.id, amount: amount.toString(), currency, demandItemIds: input.order.intendedDemandItemIds.length ? input.order.intendedDemandItemIds : undefined, referenceNumber: input.providerTxnId, payerType: input.order.payerType, payerName: input.order.payerName, payerPhone: input.order.payerPhone, payerEmail: input.order.payerEmail, payerSponsorId: input.order.payerSponsorId, payerGuardianId: input.order.payerGuardianId } as ManualPaymentInput,
       null,
       input.actorId ?? null,
       method,
-      student,
+      subject,
       selectedItems,
       amount,
       balance,
@@ -297,6 +316,19 @@ export class PaymentsService {
       const rows = await this.openItems(tx, tenantId, student.id, payer);
       return rows
         .filter((item) => this.payerItemBalance(item, payer).isPositive)
+        .sort((left, right) => this.itemDueDate(left).getTime() - this.itemDueDate(right).getTime() || left.demand.issueDate.getTime() - right.demand.issueDate.getTime() || left.sequence - right.sequence)
+        .map((item) => ({ ...item, outstandingAmount: this.payerItemBalance(item, payer).toString(), responsibilities: item.responsibilities.map((share) => ({ id: share.id, payerType: share.payerType, payerName: share.payerName, payerSponsorId: share.payerSponsorId, payerGuardianId: share.payerGuardianId, amount: share.amount.toString(), outstandingAmount: share.outstanding.toString() })) }));
+    });
+  }
+
+  async openItemsForPerson(tenantId: string, personId: string, payer: PayerSelection = { type: 'MEMBER' }) {
+    this.assertTenant(tenantId);
+    return this.prisma.transaction(async (tx) => {
+      await this.assertPortalPersonAccess(tx, tenantId, personId);
+      const person = await tx.tenantPerson.findFirst({ where: { tenantId, id: personId, status: 'ACTIVE', deletedAt: null }, select: { id: true } });
+      if (!person) throw AppError.notFound('Person');
+      const rows = await this.openItems(tx, tenantId, person.id, payer, undefined, 'personId');
+      return rows.filter((item) => this.payerItemBalance(item, payer).isPositive)
         .sort((left, right) => this.itemDueDate(left).getTime() - this.itemDueDate(right).getTime() || left.demand.issueDate.getTime() - right.demand.issueDate.getTime() || left.sequence - right.sequence)
         .map((item) => ({ ...item, outstandingAmount: this.payerItemBalance(item, payer).toString(), responsibilities: item.responsibilities.map((share) => ({ id: share.id, payerType: share.payerType, payerName: share.payerName, payerSponsorId: share.payerSponsorId, payerGuardianId: share.payerGuardianId, amount: share.amount.toString(), outstandingAmount: share.outstanding.toString() })) }));
     });
@@ -338,7 +370,8 @@ export class PaymentsService {
         if (!amount.lessThan(balance)) throw AppError.conflict('APPROVAL_NO_LONGER_REQUIRED', 'The selected balance changed and this collection is no longer a partial payment.');
         const minimum = settings?.minimumPartialAmount ? Money.fromString(settings.minimumPartialAmount.toString(), currency) : null;
         if (minimum && amount.lessThan(minimum)) throw AppError.validation(`A partial payment must be at least ${minimum.format()}.`);
-        collection = await this.recordManualPayment(tx, tenantId, data, request.requestedBy ?? null, actorId ?? null, method, student, selectedItems, amount, balance, settings?.overpaymentPolicy ?? 'CREDIT_BALANCE', settings?.allowAdvancePayment ?? false);
+        const subject: PaymentSubject = { id: student.id, studentId: student.id, personId: null, branchId: student.branchId, firstName: student.firstName, middleName: student.middleName, lastName: student.lastName, admissionNumber: student.admissionNumber, personNumber: null, typeLabel: 'Student' };
+        collection = await this.recordManualPayment(tx, tenantId, data, request.requestedBy ?? null, actorId ?? null, method, subject, selectedItems, amount, balance, settings?.overpaymentPolicy ?? 'CREDIT_BALANCE', settings?.allowAdvancePayment ?? false);
         await tx.approvalRequest.update({ where: { id }, data: { status: 'EXECUTED', executedAt: new Date() } });
       }
       await this.audit.record(tx, { tenantId, actorId, action: input.approved ? 'PAYMENT_COLLECTION_APPROVED' : 'PAYMENT_COLLECTION_REJECTED', entityType: 'ApprovalRequest', entityId: id, before: { status: request.status }, after: { status: input.approved ? 'EXECUTED' : 'REJECTED', collection }, reason: input.note });
@@ -377,7 +410,7 @@ export class PaymentsService {
     collectedBy: string | null,
     verifiedBy: string | null,
     method: { id: string; kind: PaymentMethodKind; name: string; requiresReference: boolean; requiresInstrument: boolean },
-    student: { id: string; branchId: string | null; firstName: string; middleName: string | null; lastName: string | null; admissionNumber: string },
+    subject: PaymentSubject,
     selectedItems: OpenDemandItem[],
     amount: Money,
     balance: Money,
@@ -398,14 +431,14 @@ export class PaymentsService {
     if (['PARENT', 'GUARDIAN'].includes(input.payerType ?? '') && !guardian && !options?.holdUnappliedGatewayCapture) throw AppError.validation('Choose the linked guardian who made this payment.');
     if (guardian && !['PARENT', 'GUARDIAN'].includes(input.payerType ?? '')) throw AppError.validation('A guardian reference is only valid for a parent or guardian payment.');
     if (guardian && !options?.holdUnappliedGatewayCapture) {
-      const link = await tx.studentGuardian.findFirst({ where: { tenantId, guardianId: guardian.id, studentId: student.id }, select: { id: true } });
+      const link = subject.studentId ? await tx.studentGuardian.findFirst({ where: { tenantId, guardianId: guardian.id, studentId: subject.studentId }, select: { id: true } }) : null;
       if (!link) throw AppError.validation('The selected guardian is not linked to this student.');
     }
-    const payer = payerSelection(input);
+    const payer = payerSelection({ ...input, payerType: input.payerType ?? (subject.personId ? 'MEMBER' : 'STUDENT') });
     const selectedBranchIds = [...new Set(selectedItems.map((item) => item.demand.branchId))];
     if (selectedBranchIds.length > 1) throw AppError.validation('A single payment cannot combine fee demands from different branches.');
     if (selectedBranchIds[0] === null) throw AppError.conflict('FEE_BRANCH_UNASSIGNED', 'Assign this fee demand to a branch before collecting payment.');
-    const branchId = selectedBranchIds[0] ?? options?.branchId ?? student.branchId;
+    const branchId = selectedBranchIds[0] ?? options?.branchId ?? subject.branchId;
     if (options?.branchId && branchId !== options.branchId) throw AppError.conflict('PAYMENT_ORDER_BRANCH_MISMATCH', 'The fee demand branch does not match the branch recorded on the payment order.');
     const allocationDrafts = options?.holdUnappliedGatewayCapture ? [] : this.buildAllocationDrafts(selectedItems, amount.min(balance), payer);
     const allocatedAmount = allocationDrafts.reduce((sum, draft) => sum.add(draft.amount), Money.zero(currency));
@@ -428,7 +461,8 @@ export class PaymentsService {
         branchId,
         paymentNumber,
         receiptNumber,
-        studentId: student.id,
+        studentId: subject.studentId,
+        personId: subject.personId,
         paymentOrderId: options?.paymentOrderId ?? null,
         provider: options?.provider ?? null,
         providerTxnId: options?.providerTxnId ?? null,
@@ -440,7 +474,7 @@ export class PaymentsService {
         payerName: guardian ? `${guardian.firstName} ${guardian.lastName ?? ''}`.trim() : input.payerName?.trim() || sponsor?.name || null,
         payerPhone: input.payerPhone ?? guardian?.phone ?? sponsor?.phone ?? null,
         payerEmail: input.payerEmail ?? guardian?.email ?? sponsor?.email ?? null,
-        payerStudentId: input.payerType === 'STUDENT' ? student.id : null,
+        payerStudentId: input.payerType === 'STUDENT' ? subject.studentId : null,
         payerGuardianId: guardian?.id ?? null,
         payerSponsorId: sponsor?.id ?? null,
         currency,
@@ -491,7 +525,9 @@ export class PaymentsService {
         installmentTotal.amount = installmentTotal.amount.add(allocated);
         perInstallment.set(installmentShare.installmentId, installmentTotal);
       }
-      receiptLines.push({ feeTypeCode: item.feeTypeCode, feeTypeName: item.feeTypeName, description: installmentShare ? `${item.demand.demandNumber} · ${installmentShare.installment.label}` : item.demand.demandNumber, amount: allocated.toString(), allocatedAmount: allocated.toString(), sequence: index });
+      const periodDescription = formatFinancialPeriod(item.demand.financialPeriod);
+      const description = [item.demand.demandNumber, periodDescription, installmentShare?.installment.label].filter(Boolean).join(' · ');
+      receiptLines.push({ feeTypeCode: item.feeTypeCode, feeTypeName: item.feeTypeName, description, amount: allocated.toString(), allocatedAmount: allocated.toString(), sequence: index });
     }
     for (const { item, amount: itemAllocation } of perItem.values()) {
       const nextPaid = Money.fromString(item.paidAmount.toString(), currency).add(itemAllocation);
@@ -520,7 +556,7 @@ export class PaymentsService {
     if (options?.holdUnappliedGatewayCapture && remaining.isPositive) {
       receiptLines.push({ feeTypeCode: 'UNAPPLIED_GATEWAY_CAPTURE', feeTypeName: 'Payment held for review', description: 'Provider confirmed receipt; funds are held in reconciliation suspense pending allocation.', amount: remaining.toString(), allocatedAmount: '0.0000', sequence: receiptLines.length });
     } else if (creditId && remaining.isPositive) {
-      await tx.credit.create({ data: { id: creditId, tenantId, branchId, studentId: student.id, source: overpaymentPolicy === 'ADVANCE_PAYMENT' ? 'ADVANCE_PAYMENT' : 'OVERPAYMENT', status: 'AVAILABLE', currency, originalAmount: remaining.toString(), allocatedAmount: '0', availableAmount: remaining.toString(), paymentId, reason: overpaymentPolicy === 'ADVANCE_PAYMENT' ? 'Advance payment balance' : 'Overpayment balance', createdBy: collectedBy ?? actorId } });
+      await tx.credit.create({ data: { id: creditId, tenantId, branchId, studentId: subject.studentId, personId: subject.personId, source: overpaymentPolicy === 'ADVANCE_PAYMENT' ? 'ADVANCE_PAYMENT' : 'OVERPAYMENT', status: 'AVAILABLE', currency, originalAmount: remaining.toString(), allocatedAmount: '0', availableAmount: remaining.toString(), paymentId, reason: overpaymentPolicy === 'ADVANCE_PAYMENT' ? 'Advance payment balance' : 'Overpayment balance', createdBy: collectedBy ?? actorId } });
       receiptLines.push({ feeTypeCode: 'CREDIT_BALANCE', feeTypeName: 'Unallocated credit', description: 'Held for future fee demands', amount: remaining.toString(), allocatedAmount: '0.0000', sequence: receiptLines.length });
     }
     const configuredBranding = await tx.tenantBranding.findUnique({ where: { tenantId } });
@@ -530,7 +566,8 @@ export class PaymentsService {
       receiptNumber,
       issuedAt: paidAt.toISOString(),
       payment: { paymentNumber, channel: options?.channel ?? 'MANUAL', method: method.name, kind: method.kind, amount: amount.toString(), currency, referenceNumber: input.referenceNumber ?? null, instrumentNumber: input.instrumentNumber ?? null },
-      student: { ...student, fullName: [student.firstName, student.middleName, student.lastName].filter(Boolean).join(' ') },
+      student: subject.studentId ? { id: subject.studentId, admissionNumber: subject.admissionNumber, firstName: subject.firstName, middleName: subject.middleName, lastName: subject.lastName, fullName: [subject.firstName, subject.middleName, subject.lastName].filter(Boolean).join(' ') } : null,
+      person: { id: subject.personId, personNumber: subject.personNumber, typeLabel: subject.typeLabel, firstName: subject.firstName, middleName: subject.middleName, lastName: subject.lastName, fullName: [subject.firstName, subject.middleName, subject.lastName].filter(Boolean).join(' ') },
       payer: { type: input.payerType ?? 'STUDENT', name: guardian ? `${guardian.firstName} ${guardian.lastName ?? ''}`.trim() : input.payerName?.trim() || sponsor?.name || null, phone: input.payerPhone ?? guardian?.phone ?? sponsor?.phone ?? null, email: input.payerEmail ?? guardian?.email ?? sponsor?.email ?? null, guardianId: guardian?.id ?? null, sponsorId: sponsor?.id ?? null },
       allocations: receiptLines,
       balanceAfter: options?.holdUnappliedGatewayCapture ? null : balance.subtract(allocatedAmount).toString(),
@@ -542,7 +579,8 @@ export class PaymentsService {
         branchId,
         receiptNumber,
         paymentId,
-        studentId: student.id,
+        studentId: subject.studentId,
+        personId: subject.personId,
         issueDate: dateValue(paidAt.toISOString().slice(0, 10)),
         snapshot: receiptIdSnapshot as unknown as Prisma.InputJsonValue,
         totalAmount: amount.toString(),
@@ -554,31 +592,33 @@ export class PaymentsService {
     if (receiptLines.length) await tx.receiptLine.createMany({ data: receiptLines.map((line) => ({ tenantId, receiptId, ...line })) });
 
     const tenderAccount: SystemLedgerAccountKey = options?.tenderAccount ?? (method.kind === 'CASH' ? 'CASH_IN_HAND' : 'BANK_ACCOUNT');
+    const receivableAccount: SystemLedgerAccountKey = subject.personId ? 'TENANT_PERSON_RECEIVABLE' : 'STUDENT_RECEIVABLE';
+    const creditAccount: SystemLedgerAccountKey = subject.personId ? 'TENANT_PERSON_CREDIT' : 'STUDENT_CREDIT';
     const ledgerLines: Array<{ accountKey: SystemLedgerAccountKey; side: 'DEBIT' | 'CREDIT'; amount: string; narration: string }> = [
       { accountKey: tenderAccount, side: 'DEBIT', amount: amount.toString(), narration: `${method.name} · ${paymentNumber}` },
     ];
-    if (allocatedAmount.isPositive) ledgerLines.push({ accountKey: 'STUDENT_RECEIVABLE', side: 'CREDIT', amount: allocatedAmount.toString(), narration: `Applied to fee demands · ${paymentNumber}` });
-    if (remaining.isPositive) ledgerLines.push({ accountKey: options?.holdUnappliedGatewayCapture ? 'UNAPPLIED_GATEWAY_RECEIPTS' : 'STUDENT_CREDIT', side: 'CREDIT', amount: remaining.toString(), narration: `${options?.holdUnappliedGatewayCapture ? 'Unapplied gateway receipt held for reconciliation' : 'Unallocated student credit'} · ${paymentNumber}` });
+    if (allocatedAmount.isPositive) ledgerLines.push({ accountKey: receivableAccount, side: 'CREDIT', amount: allocatedAmount.toString(), narration: `Applied to fee demands · ${paymentNumber}` });
+    if (remaining.isPositive) ledgerLines.push({ accountKey: options?.holdUnappliedGatewayCapture ? 'UNAPPLIED_GATEWAY_RECEIPTS' : creditAccount, side: 'CREDIT', amount: remaining.toString(), narration: `${options?.holdUnappliedGatewayCapture ? 'Unapplied gateway receipt held for reconciliation' : 'Unallocated person credit'} · ${paymentNumber}` });
     const eventType = options?.ledgerEventType ?? 'MANUAL_PAYMENT_RECEIVED';
-    const posted = await this.ledger.post(tx, { tenantId, branchId, currency, eventType, entryDate: paidAt.toISOString().slice(0, 10), lines: ledgerLines, studentId: student.id, paymentId, creditId, narration: `${options?.channel === 'ONLINE' ? 'Online' : 'Manual'} payment ${paymentNumber}`, createdBy: collectedBy ?? actorId });
+    const posted = await this.ledger.post(tx, { tenantId, branchId, currency, eventType, entryDate: paidAt.toISOString().slice(0, 10), lines: ledgerLines, studentId: subject.studentId, personId: subject.personId, paymentId, creditId, narration: `${options?.channel === 'ONLINE' ? 'Online' : 'Manual'} payment ${paymentNumber}`, createdBy: collectedBy ?? actorId });
 
-    await this.audit.record(tx, { tenantId, actorId: collectedBy ?? actorId, action: options?.channel === 'ONLINE' ? 'ONLINE_PAYMENT_CAPTURED' : 'MANUAL_PAYMENT_RECEIVED', entityType: 'Payment', entityId: paymentId, after: { paymentNumber, receiptNumber, studentId: student.id, amount: amount.toString(), allocatedAmount: allocatedAmount.toString(), unallocatedAmount: remaining.toString(), studentCreditAmount: creditId ? remaining.toString() : '0.0000', gatewaySuspenseAmount: options?.holdUnappliedGatewayCapture ? remaining.toString() : '0.0000', ledgerGroupId: posted.transactionGroupId } });
-    await this.outbox.publish(tx, { tenantId, eventType: 'PAYMENT_SUCCESS', aggregateType: 'Payment', aggregateId: paymentId, payload: { paymentId, paymentNumber, receiptId, receiptNumber, studentId: student.id, amount: amount.toString(), currency }, actorId: collectedBy ?? actorId, requestId: this.tenantContext.requestId });
-    await this.outbox.publish(tx, { tenantId, eventType: 'RECEIPT_GENERATED', aggregateType: 'Receipt', aggregateId: receiptId, payload: { receiptId, receiptNumber, paymentId, studentId: student.id }, actorId: collectedBy ?? actorId, requestId: this.tenantContext.requestId });
+    await this.audit.record(tx, { tenantId, actorId: collectedBy ?? actorId, action: options?.channel === 'ONLINE' ? 'ONLINE_PAYMENT_CAPTURED' : 'MANUAL_PAYMENT_RECEIVED', entityType: 'Payment', entityId: paymentId, after: { paymentNumber, receiptNumber, studentId: subject.studentId, personId: subject.personId, amount: amount.toString(), allocatedAmount: allocatedAmount.toString(), unallocatedAmount: remaining.toString(), studentCreditAmount: creditId ? remaining.toString() : '0.0000', gatewaySuspenseAmount: options?.holdUnappliedGatewayCapture ? remaining.toString() : '0.0000', ledgerGroupId: posted.transactionGroupId } });
+    await this.outbox.publish(tx, { tenantId, eventType: 'PAYMENT_SUCCESS', aggregateType: 'Payment', aggregateId: paymentId, payload: { paymentId, paymentNumber, receiptId, receiptNumber, studentId: subject.studentId, personId: subject.personId, amount: amount.toString(), currency }, actorId: collectedBy ?? actorId, requestId: this.tenantContext.requestId });
+    await this.outbox.publish(tx, { tenantId, eventType: 'RECEIPT_GENERATED', aggregateType: 'Receipt', aggregateId: receiptId, payload: { receiptId, receiptNumber, paymentId, studentId: subject.studentId, personId: subject.personId }, actorId: collectedBy ?? actorId, requestId: this.tenantContext.requestId });
     return { payment, receipt, allocations: allocationDrafts.map(({ item, installmentShare, amount: value, responsibilityId }) => ({ demandItemId: item.id, demandId: item.demandId, installmentId: installmentShare?.installmentId ?? null, responsibilityId, amount: value.toString() })), creditId };
   }
 
-  async openBalanceForPayer(tx: TransactionClient, tenantId: string, studentId: string, payer: PayerSelection, itemIds?: string[], excludePaymentOrderId?: string) {
-    await this.assertPortalStudentAccess(tx, tenantId, studentId);
-    await this.assertPortalPayerAccess(tx, tenantId, studentId, payer);
-    const items = this.selectItems(await this.openItems(tx, tenantId, studentId, payer, excludePaymentOrderId), itemIds);
+  async openBalanceForPayer(tx: TransactionClient, tenantId: string, subjectId: string, payer: PayerSelection, itemIds?: string[], excludePaymentOrderId?: string, subjectField: 'studentId' | 'personId' = 'studentId') {
+    if (subjectField === 'personId') await this.assertPortalPersonAccess(tx, tenantId, subjectId);
+    else { await this.assertPortalStudentAccess(tx, tenantId, subjectId); await this.assertPortalPayerAccess(tx, tenantId, subjectId, payer); }
+    const items = this.selectItems(await this.openItems(tx, tenantId, subjectId, payer, excludePaymentOrderId, subjectField), itemIds);
     return items.map((item) => ({ id: item.id, balance: this.payerItemBalance(item, payer) })).filter((item) => item.balance.isPositive);
   }
 
-  async planPayerPayment(tx: TransactionClient, tenantId: string, studentId: string, payer: PayerSelection, amount: Money, itemIds?: string[]) {
-    await this.assertPortalStudentAccess(tx, tenantId, studentId);
-    await this.assertPortalPayerAccess(tx, tenantId, studentId, payer);
-    const items = this.selectItems(await this.openItems(tx, tenantId, studentId, payer), itemIds);
+  async planPayerPayment(tx: TransactionClient, tenantId: string, subjectId: string, payer: PayerSelection, amount: Money, itemIds?: string[], subjectField: 'studentId' | 'personId' = 'studentId') {
+    if (subjectField === 'personId') await this.assertPortalPersonAccess(tx, tenantId, subjectId);
+    else { await this.assertPortalStudentAccess(tx, tenantId, subjectId); await this.assertPortalPayerAccess(tx, tenantId, subjectId, payer); }
+    const items = this.selectItems(await this.openItems(tx, tenantId, subjectId, payer, undefined, subjectField), itemIds);
     const balance = items.reduce((sum, item) => sum.add(this.payerItemBalance(item, payer)), Money.zero(amount.currency.code));
     if (amount.greaterThan(balance)) throw AppError.validation(`The payment exceeds this payer’s assigned responsibility (${balance.format()}).`);
     const branchIds = [...new Set(items.map((item) => item.demand.branchId))];
@@ -588,8 +628,8 @@ export class PaymentsService {
     return { balance, branchId: branchIds[0] ?? null, responsibilityShares };
   }
 
-  private async openItems(tx: TransactionClient, tenantId: string, studentId: string, payer?: PayerSelection, excludePaymentOrderId?: string): Promise<OpenDemandItem[]> {
-    const demands = await tx.feeDemand.findMany({ where: { tenantId, studentId, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] } }, orderBy: [{ dueDate: 'asc' }, { issueDate: 'asc' }] });
+  private async openItems(tx: TransactionClient, tenantId: string, subjectId: string, payer?: PayerSelection, excludePaymentOrderId?: string, subjectField: 'studentId' | 'personId' = 'studentId'): Promise<OpenDemandItem[]> {
+    const demands = await tx.feeDemand.findMany({ where: { tenantId, [subjectField]: subjectId, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] } }, orderBy: [{ dueDate: 'asc' }, { issueDate: 'asc' }] });
     if (!demands.length) return [];
     const demandById = new Map(demands.map((demand) => [demand.id, demand]));
     const items = await tx.feeDemandItem.findMany({ where: { tenantId, demandId: { in: demands.map((demand) => demand.id) }, status: { in: ['UNPAID', 'PARTIALLY_PAID'] } }, orderBy: [{ sequence: 'asc' }] });
@@ -654,7 +694,7 @@ export class PaymentsService {
       // money. Keep the responsibility reserved until a verified webhook or a
       // provider-side terminal-status check moves this intent out of an active
       // state; otherwise a late capture can race a second collection.
-      where: { tenantId, studentId, ...(excludePaymentOrderId ? { id: { not: excludePaymentOrderId } } : {}), status: { in: ['CREATED', 'INITIATED', 'PENDING'] } },
+      where: { tenantId, [subjectField]: subjectId, ...(excludePaymentOrderId ? { id: { not: excludePaymentOrderId } } : {}), status: { in: ['CREATED', 'INITIATED', 'PENDING'] } },
       select: { responsibilityShares: true },
     });
     const reservedShares = activeOrders.flatMap((order) => parseResponsibilityReservations(order.responsibilityShares));
@@ -728,8 +768,8 @@ export class PaymentsService {
         shares: rawResponsibilitiesByItem.get(item.id) ?? [],
         studentResidual: (actualOutstanding) => ({
           id: null,
-          payerType: 'STUDENT',
-          payerName: 'Student',
+          payerType: itemView.demand.personId ? 'MEMBER' : 'STUDENT',
+          payerName: itemView.demand.personId ? 'Member' : 'Student',
           payerSponsorId: null,
           payerGuardianId: null,
           priority: 2_147_483_647,
@@ -752,7 +792,7 @@ export class PaymentsService {
   private async assertPortalStudentAccess(tx: TransactionClient, tenantId: string, studentId: string): Promise<void> {
     const context = this.tenantContext.require();
     const roles = context.roles ?? [];
-    const portalOnly = roles.length > 0 && roles.every((role) => role === 'STUDENT' || role === 'PARENT');
+    const portalOnly = roles.length > 0 && roles.every((role) => role === 'STUDENT' || role === 'PARENT' || role === 'WORKSPACE_PERSON');
     if (!portalOnly) return;
     if (roles.includes('STUDENT') && context.studentId === studentId) return;
     if (roles.includes('PARENT') && context.guardianId) {
@@ -765,11 +805,21 @@ export class PaymentsService {
   private async assertPortalPayerAccess(tx: TransactionClient, tenantId: string, studentId: string, payer: PayerSelection): Promise<void> {
     const context = this.tenantContext.require();
     const roles = context.roles ?? [];
-    const portalOnly = roles.length > 0 && roles.every((role) => role === 'STUDENT' || role === 'PARENT');
+    const portalOnly = roles.length > 0 && roles.every((role) => role === 'STUDENT' || role === 'PARENT' || role === 'WORKSPACE_PERSON');
     if (!portalOnly || payer.type === 'STUDENT') return;
     if (!roles.includes('PARENT') || !context.guardianId || !['PARENT', 'GUARDIAN'].includes(payer.type) || payer.payerGuardianId !== context.guardianId) throw AppError.forbidden('Portal users may only view or pay their own responsibility share.');
     const link = await tx.studentGuardian.findFirst({ where: { tenantId, guardianId: context.guardianId, studentId }, select: { id: true } });
     if (!link) throw AppError.notFound('Student');
+  }
+
+  private async assertPortalPersonAccess(tx: TransactionClient, tenantId: string, personId: string): Promise<void> {
+    const context = this.tenantContext.require();
+    const roles = context.roles ?? [];
+    const portalOnly = roles.length > 0 && roles.every((role) => role === 'WORKSPACE_PERSON');
+    if (!portalOnly) return;
+    if (!context.userId) throw AppError.notFound('Person');
+    const user = await tx.user.findFirst({ where: { tenantId, id: context.userId, tenantPersonId: personId, status: 'ACTIVE', deletedAt: null }, select: { id: true } });
+    if (!user) throw AppError.notFound('Person');
   }
 
   private buildAllocationDrafts(items: OpenDemandItem[], amount: Money, payer: PayerSelection): AllocationDraft[] {
@@ -867,6 +917,8 @@ export class PaymentsController {
     if (!['STUDENT', 'SPONSOR', 'PARENT', 'GUARDIAN'].includes(payerType) && !payerName?.trim()) throw AppError.validation('Enter the payer name to view its assigned responsibility.');
     return this.payments.openItemsForStudent(tenant, studentId, { type: payerType, sponsorId: payerSponsorId, payerGuardianId, payerName });
   }
+  @Get('people/:personId/open-items') @PortalRoute() @RequirePermissions(PERMISSIONS.PAYMENT_READ) @ApiOperation({ summary: 'Read only the signed-in person’s assigned generic fee responsibility' })
+  openPersonItems(@CurrentTenant() tenant: string, @Param('personId') personId: string) { return this.payments.openItemsForPerson(tenant, personId); }
   @Get(':id') @RequirePermissions(PERMISSIONS.PAYMENT_READ) get(@CurrentTenant() tenant: string, @Param('id') id: string) { return this.payments.get(tenant, id); }
 }
 
@@ -888,6 +940,13 @@ export class ReceiptsController {
 export class PaymentsModule {}
 
 function dateValue(value: string): Date { return new Date(`${value.slice(0, 10)}T00:00:00.000Z`); }
+function formatFinancialPeriod(value: string | null): string {
+  if (!value) return '';
+  const [frequency, start, end] = value.split(':');
+  if (!frequency || !start || !end || Number.isNaN(dateValue(start).valueOf()) || Number.isNaN(dateValue(end).valueOf())) return value;
+  const format = (date: Date) => `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
+  return `${frequency.replaceAll('_', ' ')} · ${format(dateValue(start))}–${format(dateValue(end))}`;
+}
 function payerSelection(input: { payerType?: PayerType; payerSponsorId?: string | null; payerGuardianId?: string | null; payerName?: string | null }): PayerSelection {
   return { type: input.payerType ?? 'STUDENT', sponsorId: input.payerSponsorId ?? null, payerGuardianId: input.payerGuardianId ?? null, payerName: input.payerName ?? null };
 }
@@ -896,6 +955,9 @@ function matchesPayer(share: ResponsibilityShare, payer: PayerSelection): boolea
   if (payer.type === 'SPONSOR') return Boolean(payer.sponsorId && share.payerSponsorId === payer.sponsorId);
   if (payer.type === 'PARENT' || payer.type === 'GUARDIAN') return Boolean(payer.payerGuardianId && share.payerGuardianId === payer.payerGuardianId);
   if (payer.type === 'STUDENT') return true;
+  // Generic person responsibilities are linked to a tenant profile and the
+  // portal endpoint has already verified the signed-in account owns it.
+  if (payer.type === 'MEMBER') return true;
   return normalisePayerName(share.payerName) === normalisePayerName(payer.payerName);
 }
 function normalisePayerName(value?: string | null): string { return (value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase(); }

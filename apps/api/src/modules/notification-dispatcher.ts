@@ -282,15 +282,22 @@ export class NotificationDispatcher implements OnModuleInit, OnModuleDestroy {
     if (!notificationEvent || !NOTIFICATION_EVENTS.includes(notificationEvent)) return;
     const payload = objectValue(event.payload);
     let studentId = stringValue(payload.studentId);
+    let personId = stringValue(payload.personId);
     const demandId = stringValue(payload.demandId);
-    if (!studentId && demandId) {
-      const demand = await this.prisma.db.feeDemand.findFirst({ where: { tenantId: event.tenantId, id: demandId }, select: { studentId: true } });
-      studentId = demand?.studentId;
+    if (!studentId && !personId && demandId) {
+      const demand = await this.prisma.db.feeDemand.findFirst({ where: { tenantId: event.tenantId, id: demandId }, select: { studentId: true, personId: true } });
+      studentId = demand?.studentId ?? undefined;
+      personId = demand?.personId ?? undefined;
     }
     const paymentId = stringValue(payload.paymentId);
-    if (!studentId && paymentId) {
-      const payment = await this.prisma.db.payment.findFirst({ where: { tenantId: event.tenantId, id: paymentId }, select: { studentId: true } });
+    if (!studentId && !personId && paymentId) {
+      const payment = await this.prisma.db.payment.findFirst({ where: { tenantId: event.tenantId, id: paymentId }, select: { studentId: true, personId: true } });
       studentId = payment?.studentId ?? undefined;
+      personId = payment?.personId ?? undefined;
+    }
+    if (personId && !studentId) {
+      await this.createPersonFinanceNotification(event, notificationEvent, payload, personId, paymentId ?? null, demandId ?? null);
+      return;
     }
     if (!studentId) return;
     const student = await this.prisma.db.student.findFirst({ where: { tenantId: event.tenantId, id: studentId, deletedAt: null }, select: { id: true, admissionNumber: true, firstName: true, middleName: true, lastName: true, email: true } });
@@ -351,6 +358,37 @@ export class NotificationDispatcher implements OnModuleInit, OnModuleDestroy {
         removeOnComplete: { age: 86_400, count: 10_000 }, removeOnFail: { age: 604_800, count: 10_000 },
       });
     }
+  }
+
+  private async createPersonFinanceNotification(event: OutboxRow, notificationEvent: NotificationEvent, payload: Record<string, unknown>, personId: string, paymentId: string | null, demandId: string | null) {
+    const person = await this.prisma.db.tenantPerson.findFirst({ where: { tenantId: event.tenantId, id: personId, deletedAt: null }, select: { id: true, typeLabel: true, personNumber: true, firstName: true, middleName: true, lastName: true, preferredName: true, email: true, account: { where: { deletedAt: null }, select: { id: true, email: true } } } });
+    if (!person) return;
+    const tenant = await this.prisma.db.tenant.findUnique({ where: { id: event.tenantId }, select: { name: true } });
+    const settings = await this.prisma.db.tenantSettings.findUnique({ where: { tenantId: event.tenantId }, select: { locale: true } });
+    const notificationSetting = await this.prisma.db.tenantNotificationSetting.findFirst({ where: { tenantId: event.tenantId, event: notificationEvent, channel: 'EMAIL' } });
+    if (notificationSetting && !notificationSetting.enabled) return;
+    let template = await this.prisma.db.notificationTemplate.findFirst({ where: { tenantId: event.tenantId, event: notificationEvent, channel: 'EMAIL', locale: settings?.locale ?? 'en', active: true } });
+    if (!template && settings?.locale !== 'en') template = await this.prisma.db.notificationTemplate.findFirst({ where: { tenantId: event.tenantId, event: notificationEvent, channel: 'EMAIL', locale: 'en', active: true } });
+    if (!template) return;
+    const email = person.account?.email ?? person.email;
+    if (!email) return;
+    const name = [person.preferredName || person.firstName, person.middleName, person.lastName].filter(Boolean).join(' ');
+    const values = { tenant: { name: tenant?.name ?? 'Organization' }, person: { ...person, fullName: name }, member: { ...person, fullName: name }, student: { ...person, fullName: name }, payment: payload, demand: payload, receipt: payload, refund: payload, event: payload, recipient: { name, type: person.typeLabel } };
+    const subject = template.subject ? renderTemplate(template.subject, values) : undefined;
+    const body = renderTemplate(template.body, values);
+    const dedupeKey = `${event.id}:${createHash('sha256').update(email.toLowerCase()).digest('hex').slice(0, 24)}`;
+    const notification = await this.prisma.db.notification.upsert({
+      where: { tenantId_dedupeKey: { tenantId: event.tenantId, dedupeKey } },
+      create: { tenantId: event.tenantId, event: notificationEvent, channel: 'EMAIL', status: 'QUEUED', recipientType: person.account ? 'USER' : 'PERSON', recipientId: person.account?.id ?? person.id, toAddress: email, subject, body, payload: event.payload as never, personId: person.id, paymentId, demandId, receiptId: stringValue(payload.receiptId), dedupeKey },
+      update: {}, select: { id: true, status: true },
+    });
+    if (notification.status === 'SENT' || notification.status === 'DELIVERED') return;
+    const mail = this.config.mail;
+    await this.queue!.add('deliver-email', { tenantId: event.tenantId, notificationId: notification.id, to: email, subject, body, from: stringValue(notificationSetting?.fromAddress) ?? mail.from, ...(stringValue(notificationSetting?.fromName) ? { fromName: stringValue(notificationSetting?.fromName) } : {}) }, {
+      jobId: notification.id, attempts: this.config.queueMaxAttempts,
+      backoff: { type: 'exponential', delay: this.config.queueBackoffMs },
+      removeOnComplete: { age: 86_400, count: 10_000 }, removeOnFail: { age: 604_800, count: 10_000 },
+    });
   }
 
   private async createInvitationNotification(event: OutboxRow): Promise<void> {

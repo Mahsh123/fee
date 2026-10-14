@@ -195,6 +195,31 @@ export default function PlatformConsole() {
     finally { setLoading(false); }
   }, [activeView, tenantDetailTab, selectedTenant, userPage, loadOverview, loadTenants, loadSuperAdmins, loadPlans, loadTenantUsers, loadTenantBranches, loadTenantSubscriptions, loadTenantFeatures, loadTenantDomains]);
 
+  const loadTenantDetails = useCallback(async (tenantId: string, isCurrent: () => boolean = () => true) => {
+    setTenantDetailsLoading(true);
+    setError('');
+    try {
+      const result = await apiRequest<TenantRow>('/platform/tenants/' + encodeURIComponent(tenantId));
+      if (isCurrent()) setSelectedTenant(result);
+      return true;
+    } catch (cause) {
+      if (isCurrent()) {
+        setSelectedTenant(null);
+        setError(messageFor(cause, 'Tenant details could not be loaded.'));
+      }
+      return false;
+    } finally {
+      if (isCurrent()) setTenantDetailsLoading(false);
+    }
+  }, []);
+
+  async function refreshCurrentView() {
+    if (activeView === 'tenant-details' && tenantDetailsId) {
+      if (!await loadTenantDetails(tenantDetailsId)) return;
+    }
+    await loadBase();
+  }
+
   useEffect(() => {
     if (!user?.isPlatformAdmin) { setLoading(false); return; }
     const jobs: Array<Promise<unknown>> = [];
@@ -222,13 +247,9 @@ export default function PlatformConsole() {
     let current = true;
     setTenantDetailTab(tenantDetailTabFromHash(window.location.hash) ?? 'overview');
     setTenantCategoryEdited(false);
-    setTenantDetailsLoading(true);
-    void apiRequest<TenantRow>('/platform/tenants/' + encodeURIComponent(tenantDetailsId))
-      .then((result) => { if (current) setSelectedTenant(result); })
-      .catch((cause) => { if (current) setError(messageFor(cause, 'Tenant details could not be loaded.')); })
-      .finally(() => { if (current) setTenantDetailsLoading(false); });
+    void loadTenantDetails(tenantDetailsId, () => current);
     return () => { current = false; };
-  }, [tenantDetailsId, user?.isPlatformAdmin, selectedTenant?.id, activeView]);
+  }, [tenantDetailsId, user?.isPlatformAdmin, selectedTenant?.id, activeView, loadTenantDetails]);
 
   async function runAction(action: () => Promise<void>, successMessage?: string) {
     setBusy(true); setError(''); setNotice('');
@@ -632,7 +653,7 @@ export default function PlatformConsole() {
         <p className="muted">{activeView === 'overview' ? 'A clear view of workspace health, subscriptions, and platform access.' : activeView === 'tenants' ? 'Find an organization and manage its workspace settings and access.' : activeView === 'tenant-details' ? 'Review this workspace’s configuration, access, usage, and billing.' : activeView === 'plans' ? 'Configure the plans, modules, and limits available to organizations.' : activeView === 'admins' ? 'Manage the people who can access the Wasl platform control plane.' : 'Set up an organization and invite its first Tenant Admin.'}</p>
       </div>
       <div className="platform-heading-actions">
-        <button className="button button-secondary" onClick={() => void loadBase()} disabled={loading || busy}><RefreshCw size={15} /> Refresh</button>
+        <button className="button button-secondary" onClick={() => void refreshCurrentView()} disabled={loading || tenantDetailsLoading || busy}><RefreshCw size={15} /> Refresh</button>
         {activeView === 'provision' || activeView === 'tenant-details' ? <button type="button" className="button button-secondary" onClick={() => navigateTo('tenants')}>Back to workspaces</button> : <button type="button" className="button button-primary" onClick={() => navigateTo('provision')}><Building2 size={15} /> Provision a tenant</button>}
       </div>
     </div>

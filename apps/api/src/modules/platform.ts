@@ -282,11 +282,43 @@ export class PlatformService {
   async listTenantSubscriptions(tenantId: string) {
     const actor = this.requirePlatformAdmin();
     await this.assertManagedTenant(tenantId);
-    return this.withTenantScope(actor, tenantId, () => this.prisma.db.tenantSubscription.findMany({
-      where: { tenantId },
-      include: { plan: { select: { id: true, key: true, name: true, monthlyPrice: true, yearlyPrice: true, currency: true } }, invoices: { orderBy: { issuedAt: 'desc' }, include: { payments: { orderBy: { createdAt: 'desc' }, include: { refunds: { orderBy: { createdAt: 'desc' } } } } } } },
-      orderBy: { createdAt: 'desc' },
-    }));
+    return this.withTenantScope(actor, tenantId, async () => {
+      const subscriptions = await this.prisma.db.tenantSubscription.findMany({ where: { tenantId }, orderBy: { createdAt: 'desc' } });
+      if (subscriptions.length === 0) return [];
+
+      const subscriptionIds = subscriptions.map(({ id }) => id);
+      const planIds = [...new Set(subscriptions.map(({ planId }) => planId))];
+      const plans = await this.prisma.db.plan.findMany({ where: { id: { in: planIds } }, select: { id: true, key: true, name: true, monthlyPrice: true, yearlyPrice: true, currency: true } });
+      const invoices = await this.prisma.db.platformInvoice.findMany({ where: { tenantId, subscriptionId: { in: subscriptionIds } }, orderBy: { issuedAt: 'desc' } });
+      const invoiceIds = invoices.map(({ id }) => id);
+      const payments = invoiceIds.length
+        ? await this.prisma.db.platformPayment.findMany({ where: { tenantId, invoiceId: { in: invoiceIds } }, orderBy: { createdAt: 'desc' } })
+        : [];
+      const paymentIds = payments.map(({ id }) => id);
+      const refunds = paymentIds.length
+        ? await this.prisma.db.platformRefund.findMany({ where: { tenantId, paymentId: { in: paymentIds } }, orderBy: { createdAt: 'desc' } })
+        : [];
+
+      const plansById = new Map(plans.map((plan) => [plan.id, plan]));
+      const invoicesBySubscription = new Map<string, typeof invoices>();
+      for (const invoice of invoices) invoicesBySubscription.set(invoice.subscriptionId, [...(invoicesBySubscription.get(invoice.subscriptionId) ?? []), invoice]);
+      const paymentsByInvoice = new Map<string, typeof payments>();
+      for (const payment of payments) paymentsByInvoice.set(payment.invoiceId, [...(paymentsByInvoice.get(payment.invoiceId) ?? []), payment]);
+      const refundsByPayment = new Map<string, typeof refunds>();
+      for (const refund of refunds) refundsByPayment.set(refund.paymentId, [...(refundsByPayment.get(refund.paymentId) ?? []), refund]);
+
+      return subscriptions.map((subscription) => ({
+        ...subscription,
+        plan: plansById.get(subscription.planId) ?? null,
+        invoices: (invoicesBySubscription.get(subscription.id) ?? []).map((invoice) => ({
+          ...invoice,
+          payments: (paymentsByInvoice.get(invoice.id) ?? []).map((payment) => ({
+            ...payment,
+            refunds: refundsByPayment.get(payment.id) ?? [],
+          })),
+        })),
+      }));
+    });
   }
 
   async createTenantSubscription(tenantId: string, input: CreateTenantSubscriptionInput) {
@@ -512,24 +544,22 @@ export class PlatformService {
       ...(subscriptionStatus ? { subscriptionStatus: subscriptionStatus as SubscriptionStatus } : {}),
       ...buildSearchFilter(query.search, ['name', 'slug', 'contactEmail', 'subscriptionPlan']),
     };
-    const [items, total] = await Promise.all([
-      this.prisma.db.tenant.findMany({
-        where,
-        select: {
-          id: true, slug: true, name: true, organizationType: true, enabledModules: true, status: true, contactEmail: true, contactPhone: true, countryCode: true,
-          trialEndsAt: true, subscriptionPlan: true, subscriptionStatus: true, subscriptionRenewalAt: true, createdAt: true, updatedAt: true,
-        },
-        orderBy: toPrismaOrderBy(query.sort) as never,
-        skip: query.skip,
-        take: query.take,
-      }),
-      this.prisma.db.tenant.count({ where }),
-    ]);
-    const enriched = await Promise.all(items.map(async (tenant) => ({
-      ...tenant,
-      tenantHost: tenant.slug + '.' + this.config.tenantBaseDomain,
-      usage: await this.withTenantScope(actor, tenant.id, () => this.tenantUsage(tenant.id, tenant.enabledModules as string[])),
-    })));
+    const items = await this.prisma.db.tenant.findMany({
+      where,
+      select: {
+        id: true, slug: true, name: true, organizationType: true, enabledModules: true, status: true, contactEmail: true, contactPhone: true, countryCode: true,
+        trialEndsAt: true, subscriptionPlan: true, subscriptionStatus: true, subscriptionRenewalAt: true, createdAt: true, updatedAt: true,
+      },
+      orderBy: toPrismaOrderBy(query.sort) as never,
+      skip: query.skip,
+      take: query.take,
+    });
+    const total = await this.prisma.db.tenant.count({ where });
+    const enriched = [];
+    for (const tenant of items) {
+      const usage = await this.withTenantScope(actor, tenant.id, () => this.tenantUsage(tenant.id, tenant.enabledModules as string[]));
+      enriched.push({ ...tenant, tenantHost: tenant.slug + '.' + this.config.tenantBaseDomain, usage });
+    }
     return paginate(enriched, total, query);
   }
 
@@ -545,23 +575,7 @@ export class PlatformService {
 
   async overview() {
     const actor = this.requirePlatformAdmin();
-    const tenantWhere = { slug: { not: PLATFORM_SYSTEM_TENANT_SLUG } };
-    const statuses = ['TRIAL', 'ACTIVE', 'SUSPENDED', 'ARCHIVED'] as const;
-    const subscriptionStatuses = ['TRIAL', 'ACTIVE', 'PAST_DUE', 'PAUSED', 'CANCELLED', 'EXPIRED'] as const;
-    const [totalTenants, tenantStatusCounts, subscriptionStatusCounts, platformAdministrators, billingMetrics] = await Promise.all([
-      this.prisma.db.tenant.count({ where: tenantWhere }),
-      Promise.all(statuses.map(async (status) => [status, await this.prisma.db.tenant.count({ where: { ...tenantWhere, status } })] as const)),
-      Promise.all(subscriptionStatuses.map(async (status) => [status, await this.prisma.db.tenant.count({ where: { ...tenantWhere, subscriptionStatus: status } })] as const)),
-      this.prisma.db.user.count({ where: { tenantId: actor.tenantId, isPlatformAdmin: true, status: 'ACTIVE', deletedAt: null } }),
-      this.prisma.platformDashboardMetrics(actor.tenantId),
-    ]);
-    return {
-      totalTenants,
-      tenantStatuses: Object.fromEntries(tenantStatusCounts),
-      subscriptionStatuses: Object.fromEntries(subscriptionStatusCounts),
-      activeSuperAdmins: platformAdministrators,
-      ...billingMetrics,
-    };
+    return this.prisma.platformDashboardMetrics(actor.tenantId);
   }
 
   async getTenant(id: string) {
@@ -585,17 +599,15 @@ export class PlatformService {
     const actor = this.requirePlatformAdmin();
     await this.assertManagedTenant(tenantId);
     return this.withTenantScope(actor, tenantId, async () => {
-      const [tenant, subscription, moduleOverrides, entitlementOverrides, activeUsers, activeBranches] = await Promise.all([
-        this.prisma.db.tenant.findFirst({ where: { id: tenantId }, select: { enabledModules: true } }),
-        this.prisma.db.tenantSubscription.findFirst({
-          where: { tenantId, isCurrent: true },
-          include: { plan: { include: { modules: true, entitlements: true } } },
-        }),
-        this.prisma.db.tenantModuleOverride.findMany({ where: { tenantId }, orderBy: { moduleKey: 'asc' } }),
-        this.prisma.db.tenantEntitlementOverride.findMany({ where: { tenantId }, orderBy: { entitlementKey: 'asc' } }),
-        this.prisma.db.user.count({ where: { tenantId, deletedAt: null, status: 'ACTIVE', isPlatformAdmin: false } }),
-        this.prisma.db.branch.count({ where: { tenantId, status: { not: 'ARCHIVED' } } }),
-      ]);
+      const tenant = await this.prisma.db.tenant.findFirst({ where: { id: tenantId }, select: { enabledModules: true } });
+      const subscription = await this.prisma.db.tenantSubscription.findFirst({
+        where: { tenantId, isCurrent: true },
+        include: { plan: { include: { modules: true, entitlements: true } } },
+      });
+      const moduleOverrides = await this.prisma.db.tenantModuleOverride.findMany({ where: { tenantId }, orderBy: { moduleKey: 'asc' } });
+      const entitlementOverrides = await this.prisma.db.tenantEntitlementOverride.findMany({ where: { tenantId }, orderBy: { entitlementKey: 'asc' } });
+      const activeUsers = await this.prisma.db.user.count({ where: { tenantId, deletedAt: null, status: 'ACTIVE', isPlatformAdmin: false } });
+      const activeBranches = await this.prisma.db.branch.count({ where: { tenantId, status: { not: 'ARCHIVED' } } });
       if (!tenant) throw AppError.notFound('Tenant');
       const plannedModules = new Map((subscription?.plan.modules ?? []).map(({ moduleKey, enabled }) => [moduleKey, enabled]));
       const moduleOverrideMap = new Map(moduleOverrides.map(({ moduleKey, enabled, reason }) => [moduleKey, { enabled, reason }]));
@@ -735,7 +747,12 @@ export class PlatformService {
         });
 
         const created = await this.tenantContext.run(
-          { tenantId, userId: actor.userId, requestId: this.tenantContext.requestId ?? 'platform-provision', isPlatformAdmin: false },
+          // Provisioning is an authenticated platform operation running against
+          // a newly-created tenant inside the same transaction. Keep the
+          // platform capability for this bounded bootstrap scope: the tenant
+          // row itself is platform metadata, while all tenant-owned models are
+          // still pinned to `tenantId` by the Prisma extension.
+          { tenantId, userId: actor.userId, roles: ['PLATFORM_ADMIN'], requestId: this.tenantContext.requestId ?? 'platform-provision', isPlatformAdmin: true },
           async () => this.provisionTenantWorkspace(tx, {
             tenantId, actorId: actor.userId, passwordHash, invitationTokenHash, invitationExpiresAt,
             acceptUrl: buildUserInvitationUrl(this.config.webAppUrl, `${slug}.${this.config.tenantBaseDomain}`, invitationToken, this.config.isProduction), input,
@@ -1151,16 +1168,20 @@ export class PlatformService {
       ? await this.prisma.db.userRole.findMany({ where: { tenantId, roleId: { in: roles.map(({ id }) => id) } }, select: { userId: true }, distinct: ['userId'] })
       : [];
     const adminIds = [...new Set(adminLinks.map(({ userId }) => userId))];
-    const [totalUsers, activeUsers, activeTenantAdmins, branches, organizationUnits, payments, recentSignIn] = await Promise.all([
-      this.prisma.db.user.count({ where: { tenantId, deletedAt: null } }),
-      this.prisma.db.user.count({ where: { tenantId, deletedAt: null, status: 'ACTIVE' } }),
-      adminIds.length ? this.prisma.db.user.count({ where: { tenantId, id: { in: adminIds }, deletedAt: null, status: 'ACTIVE' } }) : 0,
-      this.prisma.db.branch.count({ where: { tenantId, status: { not: 'ARCHIVED' } } }),
-      this.prisma.db.organizationUnit.count({ where: { tenantId, active: true } }),
-      enabledModules.includes('PAYMENTS')
-        ? this.prisma.db.payment.count({ where: { tenantId } }) : Promise.resolve(null),
-      this.prisma.db.user.findFirst({ where: { tenantId, deletedAt: null, lastLoginAt: { not: null } }, orderBy: { lastLoginAt: 'desc' }, select: { lastLoginAt: true } }),
-    ]);
+    // These aggregates run once for each tenant in the platform directory. Keep
+    // them sequential so a full page does not open dozens of simultaneous Neon
+    // connections and starve authentication and host-resolution reads.
+    const totalUsers = await this.prisma.db.user.count({ where: { tenantId, deletedAt: null } });
+    const activeUsers = await this.prisma.db.user.count({ where: { tenantId, deletedAt: null, status: 'ACTIVE' } });
+    const activeTenantAdmins = adminIds.length
+      ? await this.prisma.db.user.count({ where: { tenantId, id: { in: adminIds }, deletedAt: null, status: 'ACTIVE' } })
+      : 0;
+    const branches = await this.prisma.db.branch.count({ where: { tenantId, status: { not: 'ARCHIVED' } } });
+    const organizationUnits = await this.prisma.db.organizationUnit.count({ where: { tenantId, active: true } });
+    const payments = enabledModules.includes('PAYMENTS')
+      ? await this.prisma.db.payment.count({ where: { tenantId } })
+      : null;
+    const recentSignIn = await this.prisma.db.user.findFirst({ where: { tenantId, deletedAt: null, lastLoginAt: { not: null } }, orderBy: { lastLoginAt: 'desc' }, select: { lastLoginAt: true } });
     return {
       totalUsers,
       activeUsers,
@@ -1381,7 +1402,7 @@ export class PlatformController {
   list(@Query() query: Record<string, unknown>) { return this.platform.listTenants(query); }
 
   @Get('slug-availability')
-  @UsePipes(new ZodValidationPipe(tenantSlugAvailabilitySchema))
+  @UsePipes(new ZodValidationPipe(tenantSlugAvailabilitySchema, 'query'))
   @ApiOperation({ summary: 'Check whether a workspace slug is valid and available' })
   checkSlug(@Query() query: { slug: string }) { return this.platform.checkTenantSlugAvailability(query.slug); }
 

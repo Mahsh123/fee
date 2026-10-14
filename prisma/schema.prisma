@@ -113,6 +113,13 @@ enum FeeFrequency {
   EVENT_BASED
 }
 
+enum FeeAssignmentCycleStatus {
+  GENERATING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
 enum FeeOptionality {
   MANDATORY
   OPTIONAL
@@ -202,6 +209,7 @@ enum ScholarshipKind {
 
 enum AssignmentTargetType {
   STUDENT
+  PERSON
   CLASS
   SECTION
   BATCH
@@ -211,6 +219,13 @@ enum AssignmentTargetType {
   HOSTEL
   TRANSPORT_ROUTE
   CUSTOM_GROUP
+}
+
+enum TenantPersonStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  ARCHIVED
 }
 
 enum DemandStatus {
@@ -284,6 +299,7 @@ enum PaymentMethodKind {
 
 enum PayerType {
   STUDENT
+  MEMBER
   PARENT
   GUARDIAN
   SPONSOR
@@ -658,6 +674,9 @@ model Tenant {
   provisioningOperations  TenantProvisioningOperation[]
 
   users                     User[]
+  persons                   TenantPerson[]
+  personGroups              TenantPersonGroup[]
+  personGroupMembers        TenantPersonGroupMember[]
   roles                     Role[]
   userRoles                 UserRole[]
   rolePermissions           RolePermission[]
@@ -702,6 +721,8 @@ model Tenant {
   benefitAssignments BenefitAssignment[]
 
   feeAssignments           FeeAssignment[]
+  feeAssignmentCycles      FeeAssignmentCycle[]
+  feeUsageInputs           FeeUsageInput[]
   feeDemands               FeeDemand[]
   feeDemandItems           FeeDemandItem[]
   feeDemandItemAdjustments FeeDemandItemAdjustment[]
@@ -895,7 +916,9 @@ model Branch {
   memberships     UserBranchMembership[]
   assignments     UserAssignment[]
   students        Student[]              @relation("StudentHomeBranch")
+  people          TenantPerson[]          @relation("TenantPersonHomeBranch")
   feeAssignments  FeeAssignment[]        @relation("FeeAssignmentBranch")
+  feeAssignmentCycles FeeAssignmentCycle[] @relation("FeeAssignmentCycleBranch")
   demands         FeeDemand[]            @relation("FeeDemandBranch")
   paymentOrders   PaymentOrder[]         @relation("PaymentOrderBranch")
   payments        Payment[]              @relation("PaymentBranch")
@@ -1297,6 +1320,8 @@ model User {
   /// Set when the user is a student or parent portal account.
   studentId  String? @db.Uuid
   guardianId String? @db.Uuid
+  tenantPersonId String? @db.Uuid
+  tenantPerson TenantPerson? @relation("TenantPersonAccount", fields: [tenantId, tenantPersonId], references: [tenantId, id], onDelete: Restrict)
 
   mustChangePassword Boolean   @default(false)
   lastLoginAt        DateTime?
@@ -1324,6 +1349,7 @@ model User {
   @@unique([tenantId, email])
   @@unique([tenantId, studentId])
   @@unique([tenantId, guardianId])
+  @@unique([tenantId, tenantPersonId])
   @@unique([tenantId, id])
   @@index([tenantId, status])
   @@index([email])
@@ -1499,6 +1525,8 @@ model Student {
   id       String @id @default(uuid()) @db.Uuid
   tenantId String @db.Uuid
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  personId String? @db.Uuid
+  person   TenantPerson? @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
 
   admissionNumber String
   rollNumber      String?
@@ -1560,6 +1588,7 @@ model Student {
 
   @@unique([tenantId, admissionNumber])
   @@unique([tenantId, id])
+  @@unique([tenantId, personId])
   @@index([tenantId, status])
   @@index([tenantId, branchId])
   @@index([tenantId, primaryUnitId])
@@ -1567,6 +1596,97 @@ model Student {
   @@index([tenantId, phone])
   @@index([tenantId, email])
   @@map("students")
+}
+
+/// Generic tenant-owned profile shared by fees, attendance, access, and future
+/// optional industry modules. Student-specific fields remain in Student.
+model TenantPerson {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  personNumber  String @db.VarChar(80)
+  typeKey       String @default("MEMBER") @db.VarChar(80)
+  typeLabel     String @default("Member") @db.VarChar(100)
+  firstName     String
+  middleName    String?
+  lastName      String?
+  preferredName String?
+  email         String?
+  phone         String?
+  status        TenantPersonStatus @default(ACTIVE)
+  branchId      String? @db.Uuid
+  branch        Branch? @relation("TenantPersonHomeBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String? @db.Uuid
+  updatedBy     String? @db.Uuid
+  deletedAt     DateTime?
+
+  account           User?                      @relation("TenantPersonAccount")
+  studentProfile    Student?
+  groupMemberships  TenantPersonGroupMember[]
+  feeDemands        FeeDemand[]
+  payments          Payment[]
+  paymentOrders     PaymentOrder[]
+  receipts          Receipt[]
+  credits           Credit[]
+  attendanceRecords AttendanceRecord[]
+  invoices          Invoice[]
+  adjustments       Adjustment[]
+  notifications     Notification[]
+  feeUsageInputs    FeeUsageInput[]
+
+  @@unique([tenantId, personNumber])
+  @@unique([tenantId, id])
+  @@index([tenantId, status, branchId])
+  @@index([tenantId, branchId])
+  @@index([tenantId, typeKey, status])
+  @@index([tenantId, email])
+  @@index([tenantId, phone])
+  @@map("tenant_people")
+}
+
+model TenantPersonGroup {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String
+  code        String
+  description String?
+  typeKey     String? @db.VarChar(80)
+  active      Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members            TenantPersonGroupMember[]
+  attendanceSessions AttendanceSession[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, id])
+  @@index([tenantId, active, name])
+  @@map("tenant_person_groups")
+}
+
+model TenantPersonGroupMember {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  personId String @db.Uuid
+  person   TenantPerson @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Cascade)
+  groupId  String @db.Uuid
+  group    TenantPersonGroup @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
+  startedOn DateTime @default(now()) @db.Date
+  endedOn   DateTime? @db.Date
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, personId, groupId])
+  @@unique([tenantId, id])
+  @@index([tenantId, groupId, endedOn])
+  @@index([tenantId, personId, endedOn])
+  @@map("tenant_person_group_members")
 }
 
 model StudentUnitMembership {
@@ -1650,8 +1770,10 @@ model AttendanceSession {
 
   branchId String @db.Uuid
   branch   Branch @relation("AttendanceBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
-  academicUnitId String @db.Uuid
-  academicUnit   AcademicUnit @relation(fields: [tenantId, academicUnitId], references: [tenantId, id], onDelete: Restrict)
+  academicUnitId String? @db.Uuid
+  academicUnit   AcademicUnit? @relation(fields: [tenantId, academicUnitId], references: [tenantId, id], onDelete: Restrict)
+  personGroupId  String? @db.Uuid
+  personGroup    TenantPersonGroup? @relation(fields: [tenantId, personGroupId], references: [tenantId, id], onDelete: Restrict)
 
   attendanceDate DateTime @db.Date
   sessionLabel String @default("FULL_DAY") @db.VarChar(40)
@@ -1667,6 +1789,7 @@ model AttendanceSession {
   @@unique([tenantId, id])
   @@unique([tenantId, idempotencyKey])
   @@unique([tenantId, branchId, academicUnitId, attendanceDate, sessionLabel])
+  @@index([tenantId, personGroupId, attendanceDate])
   @@index([tenantId, academicUnitId, attendanceDate])
   @@index([tenantId, branchId, attendanceDate])
   @@index([tenantId, markedBy])
@@ -1679,8 +1802,10 @@ model AttendanceRecord {
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sessionId String @db.Uuid
   session AttendanceSession @relation(fields: [tenantId, sessionId], references: [tenantId, id], onDelete: Cascade)
-  studentId String @db.Uuid
-  student Student @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Cascade)
+  studentId String? @db.Uuid
+  student Student? @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Cascade)
+  personId String @db.Uuid
+  person TenantPerson @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Cascade)
 
   status AttendanceStatus
   remarks String? @db.VarChar(500)
@@ -1690,9 +1815,11 @@ model AttendanceRecord {
   updatedAt DateTime @updatedAt
 
   @@unique([tenantId, id])
-  @@unique([sessionId, studentId])
+  @@unique([tenantId, sessionId, studentId])
+  @@unique([tenantId, sessionId, personId])
   @@index([tenantId, sessionId])
   @@index([tenantId, studentId, createdAt])
+  @@index([tenantId, personId])
   @@index([tenantId, updatedBy])
   @@map("attendance_records")
 }
@@ -2114,6 +2241,8 @@ model FeeStructureItem {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  usageInputs FeeUsageInput[]
 
   @@unique([feeStructureVersionId, feeTypeId])
   @@unique([tenantId, id])
@@ -2598,6 +2727,8 @@ model FeeAssignment {
   targetId         String?              @db.Uuid
   /// Explicit student selection when targetType is STUDENT or a custom list.
   targetStudentIds String[]             @db.Uuid
+  /// Explicit generic person selection when targetType is PERSON.
+  targetPersonIds  String[]             @default([]) @db.Uuid
   academicYearId   String?              @db.Uuid
 
   /// Optional overrides of the structure item schedule.
@@ -2619,6 +2750,7 @@ model FeeAssignment {
   updatedBy String?  @db.Uuid
 
   demands FeeDemand[]
+  cycles  FeeAssignmentCycle[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -2627,6 +2759,61 @@ model FeeAssignment {
   @@index([tenantId, feeStructureId])
   @@index([tenantId, feeStructureVersionId])
   @@map("fee_assignments")
+}
+
+/// A single, replay-safe billing period for a generic people assignment.
+model FeeAssignmentCycle {
+  id              String        @id @default(uuid()) @db.Uuid
+  tenantId        String        @db.Uuid
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  feeAssignmentId String        @db.Uuid
+  assignment      FeeAssignment @relation(fields: [tenantId, feeAssignmentId], references: [tenantId, id], onDelete: Cascade)
+  branchId        String        @db.Uuid
+  branch          Branch        @relation("FeeAssignmentCycleBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+
+  frequency   FeeFrequency
+  periodStart DateTime     @db.Date
+  periodEnd   DateTime     @db.Date
+  dueDate     DateTime     @db.Date
+  status      FeeAssignmentCycleStatus @default(GENERATING)
+  summary     Json?
+  generatedAt DateTime?
+  createdAt   DateTime     @default(now())
+  createdBy   String?      @db.Uuid
+  updatedAt   DateTime     @updatedAt
+
+  usageInputs FeeUsageInput[]
+  demands     FeeDemand[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, feeAssignmentId, frequency, periodStart])
+  @@index([tenantId, feeAssignmentId, periodStart])
+  @@index([tenantId, branchId])
+  @@index([tenantId, status, periodStart])
+  @@map("fee_assignment_cycles")
+}
+
+/// Per-person quantity captured for a usage or formula fee in one cycle.
+model FeeUsageInput {
+  id                 String             @id @default(uuid()) @db.Uuid
+  tenantId           String             @db.Uuid
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cycleId            String             @db.Uuid
+  cycle              FeeAssignmentCycle @relation(fields: [tenantId, cycleId], references: [tenantId, id], onDelete: Cascade)
+  personId           String             @db.Uuid
+  person             TenantPerson       @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
+  feeStructureItemId String             @db.Uuid
+  feeStructureItem   FeeStructureItem   @relation(fields: [tenantId, feeStructureItemId], references: [tenantId, id], onDelete: Restrict)
+  quantity           Decimal            @db.Decimal(12, 4)
+  createdAt          DateTime           @default(now())
+  createdBy          String?            @db.Uuid
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, cycleId, personId, feeStructureItemId])
+  @@index([tenantId, cycleId, personId])
+  @@index([tenantId, personId])
+  @@index([tenantId, feeStructureItemId])
+  @@map("fee_usage_inputs")
 }
 
 /// The student's actual obligation for one assignment/period. Preserves
@@ -2640,12 +2827,16 @@ model FeeDemand {
   branchId String? @db.Uuid
   branch   Branch? @relation("FeeDemandBranch", fields: [tenantId, branchId], references: [tenantId, id], onDelete: NoAction)
 
-  studentId String  @db.Uuid
-  student   Student @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+  studentId String?  @db.Uuid
+  student   Student? @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+  personId  String? @db.Uuid
+  person    TenantPerson? @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
 
   demandNumber    String
   feeAssignmentId String?        @db.Uuid
   feeAssignment   FeeAssignment? @relation(fields: [tenantId, feeAssignmentId], references: [tenantId, id], onDelete: NoAction)
+  cycleId         String?             @db.Uuid
+  cycle           FeeAssignmentCycle? @relation(fields: [tenantId, cycleId], references: [tenantId, id], onDelete: Restrict)
 
   academicYearId  String? @db.Uuid
   studentGroupKey String?
@@ -2704,7 +2895,9 @@ model FeeDemand {
 
   @@unique([tenantId, demandNumber])
   @@unique([tenantId, id])
+  @@unique([tenantId, cycleId, personId])
   @@index([tenantId, studentId, status])
+  @@index([tenantId, personId, status])
   @@index([tenantId, dueDate])
   @@index([tenantId, academicYearId])
   @@index([tenantId, status, dueDate])
@@ -2978,6 +3171,8 @@ model PaymentOrder {
 
   orderNumber            String
   studentId              String?        @db.Uuid
+  personId               String?        @db.Uuid
+  person                 TenantPerson?  @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
   admissionApplicationId String?        @db.Uuid
   payerType              PayerType      @default(STUDENT)
   payerName              String?
@@ -3035,6 +3230,7 @@ model PaymentOrder {
   @@index([tenantId, status])
   @@index([tenantId, branchId])
   @@index([tenantId, studentId])
+  @@index([tenantId, personId])
   @@index([tenantId, payerSponsorId])
   @@index([tenantId, payerGuardianId])
   @@index([tenantId, methodId])
@@ -3056,6 +3252,8 @@ model Payment {
 
   studentId String?  @db.Uuid
   student   Student? @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+  personId  String? @db.Uuid
+  person    TenantPerson? @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
 
   paymentOrderId String?       @db.Uuid
   paymentOrder   PaymentOrder? @relation(fields: [tenantId, paymentOrderId], references: [tenantId, id], onDelete: NoAction)
@@ -3129,6 +3327,7 @@ model Payment {
   @@unique([tenantId, receiptNumber])
   @@unique([tenantId, id])
   @@index([tenantId, studentId, status])
+  @@index([tenantId, personId, status])
   @@index([tenantId, branchId, status])
   @@index([tenantId, status, paidAt])
   @@index([tenantId, paidAt])
@@ -3441,6 +3640,8 @@ model Credit {
 
   studentId String?  @db.Uuid
   student   Student? @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+  personId  String? @db.Uuid
+  person    TenantPerson? @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
 
   source   CreditSource
   status   CreditStatus @default(AVAILABLE)
@@ -3469,6 +3670,7 @@ model Credit {
 
   @@unique([tenantId, id])
   @@index([tenantId, studentId, status])
+  @@index([tenantId, personId, status])
   @@index([tenantId, branchId, status])
   @@index([tenantId, source])
   @@index([tenantId, paymentId])
@@ -3525,6 +3727,8 @@ model Adjustment {
   installmentItemId String?          @db.Uuid
   installmentItem   InstallmentItem? @relation(fields: [tenantId, installmentItemId], references: [tenantId, id], onDelete: Restrict)
   studentId         String?          @db.Uuid
+  personId          String?          @db.Uuid
+  person            TenantPerson?    @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
   paymentId         String?          @db.Uuid
   creditId          String?          @db.Uuid
 
@@ -3559,6 +3763,7 @@ model Adjustment {
   @@unique([tenantId, reversalOfAdjustmentId])
   @@unique([tenantId, id])
   @@index([tenantId, demandId])
+  @@index([tenantId, personId])
   @@index([tenantId, installmentItemId])
   @@index([tenantId, status])
   @@index([tenantId, branchId, status])
@@ -3623,6 +3828,7 @@ model LedgerEntry {
   postedAt  DateTime @default(now())
 
   studentId    String? @db.Uuid
+  personId     String? @db.Uuid
   demandId     String? @db.Uuid
   demandItemId String? @db.Uuid
   paymentId    String? @db.Uuid
@@ -3666,6 +3872,8 @@ model Receipt {
   payment       Payment  @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: Restrict)
   studentId     String?  @db.Uuid
   student       Student? @relation(fields: [tenantId, studentId], references: [tenantId, id], onDelete: Restrict)
+  personId      String?  @db.Uuid
+  person        TenantPerson? @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
 
   status    ReceiptStatus @default(GENERATED)
   issueDate DateTime      @db.Date
@@ -3698,6 +3906,7 @@ model Receipt {
   @@unique([tenantId, receiptNumber])
   @@unique([tenantId, id])
   @@index([tenantId, studentId])
+  @@index([tenantId, personId])
   @@index([tenantId, issueDate])
   @@index([tenantId, status])
   @@index([tenantId, branchId, issueDate])
@@ -3736,6 +3945,8 @@ model Invoice {
 
   invoiceNumber String
   studentId     String?    @db.Uuid
+  personId      String?    @db.Uuid
+  person        TenantPerson? @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
   demandId      String?    @db.Uuid
   demand        FeeDemand? @relation(fields: [tenantId, demandId], references: [tenantId, id], onDelete: NoAction)
 
@@ -3769,6 +3980,7 @@ model Invoice {
   @@unique([tenantId, demandId])
   @@unique([tenantId, id])
   @@index([tenantId, studentId])
+  @@index([tenantId, personId])
   @@index([tenantId, status])
   @@index([tenantId, branchId, status])
   @@index([tenantId, demandId])
@@ -3943,6 +4155,8 @@ model Notification {
   payload       Json?
 
   studentId String? @db.Uuid
+  personId  String? @db.Uuid
+  person    TenantPerson? @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict)
   paymentId String? @db.Uuid
   demandId  String? @db.Uuid
   receiptId String? @db.Uuid
@@ -3953,6 +4167,7 @@ model Notification {
   scheduledFor      DateTime?
   sentAt            DateTime?
   deliveredAt       DateTime?
+  readAt            DateTime?
 
   dedupeKey String?
 
@@ -3963,6 +4178,8 @@ model Notification {
   @@unique([tenantId, id])
   @@index([tenantId, status, scheduledFor])
   @@index([tenantId, event])
+  @@index([tenantId, personId])
+  @@index([tenantId, recipientType, recipientId, createdAt])
   @@map("notifications")
 }
 

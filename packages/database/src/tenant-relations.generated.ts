@@ -112,6 +112,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "field": "id"
       }
     ],
+    "personId": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ],
     "policyId": [
       {
         "model": "FeePolicy",
@@ -343,6 +349,24 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
             "field": "id"
           }
         ],
+        "TenantPerson": [
+          {
+            "model": "TenantPerson",
+            "field": "id"
+          }
+        ],
+        "TenantPersonGroup": [
+          {
+            "model": "TenantPersonGroup",
+            "field": "id"
+          }
+        ],
+        "TenantPersonGroupMember": [
+          {
+            "model": "TenantPersonGroupMember",
+            "field": "id"
+          }
+        ],
         "StudentUnitMembership": [
           {
             "model": "StudentUnitMembership",
@@ -532,6 +556,18 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "FeeAssignment": [
           {
             "model": "FeeAssignment",
+            "field": "id"
+          }
+        ],
+        "FeeAssignmentCycle": [
+          {
+            "model": "FeeAssignmentCycle",
+            "field": "id"
+          }
+        ],
+        "FeeUsageInput": [
+          {
+            "model": "FeeUsageInput",
             "field": "id"
           }
         ],
@@ -773,6 +809,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
     ]
   },
   "AttendanceRecord": {
+    "personId": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ],
     "sessionId": [
       {
         "model": "AttendanceSession",
@@ -808,6 +850,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
     "markedBy": [
       {
         "model": "User",
+        "field": "id"
+      }
+    ],
+    "personGroupId": [
+      {
+        "model": "TenantPersonGroup",
         "field": "id"
       }
     ]
@@ -926,6 +974,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
     "paymentId": [
       {
         "model": "Payment",
+        "field": "id"
+      }
+    ],
+    "personId": [
+      {
+        "model": "TenantPerson",
         "field": "id"
       }
     ],
@@ -1154,6 +1208,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         ]
       }
     },
+    "targetPersonIds": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ],
     "targetStudentIds": [
       {
         "model": "Student",
@@ -1163,6 +1223,26 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
     "updatedBy": [
       {
         "model": "User",
+        "field": "id"
+      }
+    ]
+  },
+  "FeeAssignmentCycle": {
+    "branchId": [
+      {
+        "model": "Branch",
+        "field": "id"
+      }
+    ],
+    "createdBy": [
+      {
+        "model": "User",
+        "field": "id"
+      }
+    ],
+    "feeAssignmentId": [
+      {
+        "model": "FeeAssignment",
         "field": "id"
       }
     ]
@@ -1186,9 +1266,21 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "field": "id"
       }
     ],
+    "cycleId": [
+      {
+        "model": "FeeAssignmentCycle",
+        "field": "id"
+      }
+    ],
     "feeAssignmentId": [
       {
         "model": "FeeAssignment",
+        "field": "id"
+      }
+    ],
+    "personId": [
+      {
+        "model": "TenantPerson",
         "field": "id"
       }
     ],
@@ -1663,6 +1755,32 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
       }
     ]
   },
+  "FeeUsageInput": {
+    "createdBy": [
+      {
+        "model": "User",
+        "field": "id"
+      }
+    ],
+    "cycleId": [
+      {
+        "model": "FeeAssignmentCycle",
+        "field": "id"
+      }
+    ],
+    "feeStructureItemId": [
+      {
+        "model": "FeeStructureItem",
+        "field": "id"
+      }
+    ],
+    "personId": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ]
+  },
   "GatewayTransaction": {
     "gatewayConfigId": [
       {
@@ -1857,6 +1975,24 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
             "field": "id"
           }
         ],
+        "TenantPerson": [
+          {
+            "model": "TenantPerson",
+            "field": "id"
+          }
+        ],
+        "TenantPersonGroup": [
+          {
+            "model": "TenantPersonGroup",
+            "field": "id"
+          }
+        ],
+        "TenantPersonGroupMember": [
+          {
+            "model": "TenantPersonGroupMember",
+            "field": "id"
+          }
+        ],
         "StudentUnitMembership": [
           {
             "model": "StudentUnitMembership",
@@ -2046,6 +2182,18 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "FeeAssignment": [
           {
             "model": "FeeAssignment",
+            "field": "id"
+          }
+        ],
+        "FeeAssignmentCycle": [
+          {
+            "model": "FeeAssignmentCycle",
+            "field": "id"
+          }
+        ],
+        "FeeUsageInput": [
+          {
+            "model": "FeeUsageInput",
             "field": "id"
           }
         ],
@@ -2341,6 +2489,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "field": "id"
       }
     ],
+    "personId": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ],
     "studentId": [
       {
         "model": "Student",
@@ -2437,6 +2591,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "field": "id"
       }
     ],
+    "personId": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ],
     "refundId": [
       {
         "model": "Refund",
@@ -2466,6 +2626,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
     "paymentId": [
       {
         "model": "Payment",
+        "field": "id"
+      }
+    ],
+    "personId": [
+      {
+        "model": "TenantPerson",
         "field": "id"
       }
     ],
@@ -2624,6 +2790,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "field": "id"
       }
     ],
+    "personId": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ],
     "reversalOfPaymentId": [
       {
         "model": "Payment",
@@ -2750,6 +2922,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "field": "id"
       }
     ],
+    "personId": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ],
     "studentId": [
       {
         "model": "Student",
@@ -2803,6 +2981,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
     "pdfDocumentId": [
       {
         "model": "Document",
+        "field": "id"
+      }
+    ],
+    "personId": [
+      {
+        "model": "TenantPerson",
         "field": "id"
       }
     ],
@@ -3086,6 +3270,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
         "field": "id"
       }
     ],
+    "personId": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ],
     "primaryUnitId": [
       {
         "model": "AcademicUnit",
@@ -3203,6 +3393,40 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
       }
     ]
   },
+  "TenantPerson": {
+    "branchId": [
+      {
+        "model": "Branch",
+        "field": "id"
+      }
+    ],
+    "createdBy": [
+      {
+        "model": "User",
+        "field": "id"
+      }
+    ],
+    "updatedBy": [
+      {
+        "model": "User",
+        "field": "id"
+      }
+    ]
+  },
+  "TenantPersonGroupMember": {
+    "groupId": [
+      {
+        "model": "TenantPersonGroup",
+        "field": "id"
+      }
+    ],
+    "personId": [
+      {
+        "model": "TenantPerson",
+        "field": "id"
+      }
+    ]
+  },
   "TenantSettings": {
     "defaultAcademicYearId": [
       {
@@ -3239,6 +3463,12 @@ export const TENANT_FOREIGN_KEY_TARGETS: Readonly<Record<string, Readonly<Record
     "studentId": [
       {
         "model": "Student",
+        "field": "id"
+      }
+    ],
+    "tenantPersonId": [
+      {
+        "model": "TenantPerson",
         "field": "id"
       }
     ],

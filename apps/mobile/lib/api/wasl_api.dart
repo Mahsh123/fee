@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../app_config.dart';
 import '../models.dart';
 
 const _configuredApiBase = String.fromEnvironment('WASL_API_BASE_URL');
@@ -44,9 +46,24 @@ class WaslApi {
     final workspace = _normalizeWorkspace(value);
     final configured = _configuredApiBase.trim();
     final api = configured.isEmpty
-        ? workspace.replace(path: '/api/v1', query: null, fragment: null)
+        ? _defaultApiBase(workspace)
         : _normalizeApiBase(configured);
     return WaslApi._(workspace, api, _secureStorage);
+  }
+
+  static Uri _defaultApiBase(Uri workspace) {
+    // A physical Android device reaches the development computer through
+    // `adb reverse`; localhost is the forwarded socket, while the Host header
+    // below still selects the configured tenant in Wasl middleware.
+    if (kDebugMode && workspace.host.endsWith('.localhost')) {
+      return workspace.replace(
+        host: 'localhost',
+        path: '/api/v1',
+        query: null,
+        fragment: null,
+      );
+    }
+    return workspace.replace(path: '/api/v1', query: null, fragment: null);
   }
 
   static Future<WaslApi?> restore() async {
@@ -54,7 +71,14 @@ class WaslApi {
     final refresh = await _secureStorage.read(key: _refreshKey);
     if (workspace == null || refresh == null) return null;
     try {
-      final api = forWorkspace(workspace);
+      final configuredWorkspace = _normalizeWorkspace(waslWorkspaceUrl);
+      final savedWorkspace = _normalizeWorkspace(workspace);
+      if (savedWorkspace.toString() != configuredWorkspace.toString()) {
+        await _secureStorage.delete(key: _workspaceKey);
+        await _secureStorage.delete(key: _refreshKey);
+        return null;
+      }
+      final api = forWorkspace(configuredWorkspace.toString());
       api._refreshToken = refresh;
       return api;
     } on FormatException {

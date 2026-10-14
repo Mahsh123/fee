@@ -40,6 +40,7 @@ function platformService(options: {
     transactionWithRetry: options.transactionWithRetry ?? vi.fn(),
     transaction: vi.fn(),
     platformDashboardMetrics: options.dashboardMetrics ?? vi.fn(async () => ({
+      totalTenants: 0, tenantStatuses: {}, subscriptionStatuses: {}, activeSuperAdmins: 0,
       activePlans: 0, subscriptionsByCurrency: [], invoicesByCurrency: [], requestedRefundsByCurrency: [], domains: { verified: 0, pending: 0 },
     })),
   };
@@ -140,23 +141,26 @@ describe('platform administration tenant boundaries', () => {
 
   it('returns billing, refund, domain and plan health alongside tenant lifecycle counts', async () => {
     const dashboardMetrics = vi.fn(async () => ({
+      totalTenants: 9,
+      tenantStatuses: { TRIAL: 7, ACTIVE: 2 },
+      subscriptionStatuses: { TRIAL: 5, ACTIVE: 4 },
+      activeSuperAdmins: 2,
       activePlans: 3,
       subscriptionsByCurrency: [{ currency: 'USD', activeCount: 4, trialCount: 2, monthlyRecurringRevenue: '125.0000' }],
       invoicesByCurrency: [{ currency: 'USD', openCount: 2, overdueCount: 1, outstandingAmount: '50.0000' }],
       requestedRefundsByCurrency: [{ currency: 'USD', count: 1, amount: '10.0000' }],
       domains: { verified: 5, pending: 1 },
     }));
-    const tenantCount = vi.fn(async ({ where }: { where: Record<string, unknown> }) => where.status ? 1 : 9);
-    const superAdminCount = vi.fn(async () => 2);
     const { service, runAsSuperAdmin } = platformService({
-      db: { tenant: { count: tenantCount }, user: { count: superAdminCount } }, dashboardMetrics,
+      dashboardMetrics,
     });
 
     const overview = await runAsSuperAdmin(() => service.overview());
 
     expect(dashboardMetrics).toHaveBeenCalledWith('platform-tenant');
     expect(overview).toMatchObject({
-      totalTenants: 9, activeSuperAdmins: 2, activePlans: 3,
+      totalTenants: 9, tenantStatuses: { TRIAL: 7, ACTIVE: 2 },
+      subscriptionStatuses: { TRIAL: 5, ACTIVE: 4 }, activeSuperAdmins: 2, activePlans: 3,
       subscriptionsByCurrency: [{ currency: 'USD', monthlyRecurringRevenue: '125.0000' }],
       invoicesByCurrency: [{ openCount: 2, overdueCount: 1, outstandingAmount: '50.0000' }],
       requestedRefundsByCurrency: [{ count: 1, amount: '10.0000' }], domains: { verified: 5, pending: 1 },
@@ -200,6 +204,33 @@ describe('platform administration tenant boundaries', () => {
     expect(tenantFindFirst).toHaveBeenCalledWith({ where: { id: 'tenant-b', slug: { not: 'fee-platform' } }, select: { id: true } });
   });
 
+  it('loads subscription billing history through explicit tenant-scoped queries', async () => {
+    const subscriptions = [{ id: 'subscription-a', tenantId: 'tenant-a', planId: 'plan-a', createdAt: new Date('2026-10-01T00:00:00.000Z') }];
+    const invoices = [{ id: 'invoice-a', tenantId: 'tenant-a', subscriptionId: 'subscription-a', issuedAt: new Date('2026-10-02T00:00:00.000Z') }];
+    const payments = [{ id: 'payment-a', tenantId: 'tenant-a', invoiceId: 'invoice-a', createdAt: new Date('2026-10-03T00:00:00.000Z') }];
+    const refunds = [{ id: 'refund-a', tenantId: 'tenant-a', paymentId: 'payment-a', createdAt: new Date('2026-10-04T00:00:00.000Z') }];
+    const tenantSubscriptionFindMany = vi.fn(async () => subscriptions);
+    const planFindMany = vi.fn(async () => [{ id: 'plan-a', key: 'starter', name: 'Starter', monthlyPrice: '0.0000', yearlyPrice: '0.0000', currency: 'INR' }]);
+    const invoiceFindMany = vi.fn(async () => invoices);
+    const paymentFindMany = vi.fn(async () => payments);
+    const refundFindMany = vi.fn(async () => refunds);
+    const { service, runAsSuperAdmin } = platformService({ db: {
+      tenantSubscription: { findMany: tenantSubscriptionFindMany },
+      plan: { findMany: planFindMany },
+      platformInvoice: { findMany: invoiceFindMany },
+      platformPayment: { findMany: paymentFindMany },
+      platformRefund: { findMany: refundFindMany },
+    } });
+
+    const result = await runAsSuperAdmin(() => service.listTenantSubscriptions('tenant-a'));
+
+    expect(tenantSubscriptionFindMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a' }, orderBy: { createdAt: 'desc' } });
+    expect(invoiceFindMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a', subscriptionId: { in: ['subscription-a'] } }, orderBy: { issuedAt: 'desc' } });
+    expect(paymentFindMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a', invoiceId: { in: ['invoice-a'] } }, orderBy: { createdAt: 'desc' } });
+    expect(refundFindMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a', paymentId: { in: ['payment-a'] } }, orderBy: { createdAt: 'desc' } });
+    expect(result).toMatchObject([{ id: 'subscription-a', plan: { key: 'starter', currency: 'INR' }, invoices: [{ id: 'invoice-a', payments: [{ id: 'payment-a', refunds: [{ id: 'refund-a' }] }] }] }]);
+  });
+
   it('provisions a normalized subdomain and initial Tenant Admin atomically', async () => {
     const roles = ['TENANT_OWNER', 'TENANT_ADMIN', 'TENANT_MEMBER', 'REPORT_VIEWER'].map((key) => ({ id: `role-${key}`, key }));
     const permissionRows = [...new Set(Object.values(PERMISSIONS))].map((key) => ({ id: `permission-${key}`, key }));
@@ -208,10 +239,12 @@ describe('platform administration tenant boundaries', () => {
       status: 'TRIAL', contactEmail: null, contactPhone: null, countryCode: null, trialEndsAt: null,
       subscriptionPlan: null, subscriptionStatus: 'TRIAL', subscriptionRenewalAt: null, createdAt: new Date('2026-10-06T00:00:00.000Z'),
     }));
+    let tenantBootstrapContext: unknown;
+    const tenantUpdate = vi.fn();
     const userCreate = vi.fn(async ({ data }: { data: { tenantId: string; email: string } }) => ({ id: 'tenant-admin-id', email: data.email, tenantId: data.tenantId }));
     let savedOperation: Record<string, unknown> | null = null;
     const tx = {
-      tenant: { create: tenantCreate, update: vi.fn() },
+      tenant: { create: tenantCreate, update: tenantUpdate },
       plan: { findFirst: vi.fn(async () => ({ id: 'starter-plan', key: 'starter', monthlyPrice: 0, yearlyPrice: 0, currency: 'USD', trialDays: 14, modules: [...CORE_TENANT_MODULES, 'FEES', 'PAYMENTS', 'ADMISSIONS', 'PORTAL'].map((moduleKey) => ({ moduleKey })) })) },
       tenantSubscription: { create: vi.fn() },
       permission: { findMany: vi.fn(async () => permissionRows) },
@@ -232,7 +265,8 @@ describe('platform administration tenant boundaries', () => {
     };
     const transactionWithRetry = vi.fn(async (work: (transaction: typeof tx) => Promise<unknown>) => work(tx));
     const operationFindUnique = vi.fn(async () => savedOperation);
-    const { service, runAsSuperAdmin, prisma } = platformService({ transactionWithRetry, db: { tenantProvisioningOperation: { findUnique: operationFindUnique } } });
+    const { service, runAsSuperAdmin, prisma, context } = platformService({ transactionWithRetry, db: { tenantProvisioningOperation: { findUnique: operationFindUnique } } });
+    tenantUpdate.mockImplementation(() => { tenantBootstrapContext = context.peek(); });
     const input = provisionTenantSchema.parse({
       name: '  ABC Academy  ',
       currency: 'INR', currencySymbol: '₹', currencyMinorUnits: 2, timezone: 'Asia/Kolkata', locale: 'en-IN',
@@ -246,6 +280,7 @@ describe('platform administration tenant boundaries', () => {
     expect(created).toMatchObject({ slug: 'abc-academy', tenantHost: 'abc-academy.localhost', tenantAdminEmail: 'admin@abc-academy.test', tenantAdminStatus: 'INVITED' });
     expect(tx.role.createMany).toHaveBeenCalledWith({ data: roles.map(({ key }) => ({ tenantId: created.id, key, name: SYSTEM_ROLE_NAMES[key as keyof typeof SYSTEM_ROLE_NAMES], isSystem: true, permissionsConfigured: true })) });
     expect(tx.tenant.update).toHaveBeenCalledWith({ where: { id: created.id }, data: expect.objectContaining({ enabledModules: [...CORE_TENANT_MODULES] }) });
+    expect(tenantBootstrapContext).toMatchObject({ tenantId: created.id, userId: 'super-admin', roles: ['PLATFORM_ADMIN'], isPlatformAdmin: true });
     expect(tx.tenantModuleOverride.createMany).toHaveBeenCalledWith({ data: ['FEES', 'PAYMENTS', 'ADMISSIONS', 'PORTAL'].map((moduleKey) => ({ tenantId: created.id, moduleKey, enabled: false, reason: 'Not selected during workspace provisioning.', updatedBy: 'super-admin' })) });
     expect(tx.paymentMethod.createMany).not.toHaveBeenCalled();
     expect(userCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ tenantId: created.id, email: 'admin@abc-academy.test', status: 'INVITED', mustChangePassword: true, invitationTokenHash: 'hash:tenant-admin-invitation-token', invitationExpiresAt: expect.any(Date) }) }));

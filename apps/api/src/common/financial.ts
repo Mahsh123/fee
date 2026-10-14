@@ -65,6 +65,7 @@ export interface PostLedgerInput {
   entryDate: string;
   lines: LedgerLineInput[];
   studentId?: string | null;
+  personId?: string | null;
   demandId?: string | null;
   demandItemId?: string | null;
   paymentId?: string | null;
@@ -217,6 +218,7 @@ export class LedgerService {
           eventType: input.eventType,
           entryDate: new Date(input.entryDate),
           studentId: input.studentId ?? null,
+          personId: input.personId ?? null,
           demandId: input.demandId ?? null,
           demandItemId: input.demandItemId ?? null,
           paymentId: input.paymentId ?? null,

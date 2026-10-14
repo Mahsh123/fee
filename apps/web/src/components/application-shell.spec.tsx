@@ -58,10 +58,11 @@ describe('application hierarchy navigation', () => {
     expect(markup).not.toContain('Fee catalog');
     expect(markup).not.toContain('Payments');
     expect(markup).not.toContain('Reports');
+    expect(markup).not.toContain('Attendance');
   });
 
   it('hides enabled tenant modules when the current role has no read permission', () => {
-    mockTenant.mockReturnValue({ kind: 'tenant', slug: 'northstar', name: 'Northstar', enabledModules: ['FEES', 'USERS'], branding: { organizationName: 'Northstar', email: null, logoUrl: null, primaryColor: '#047857', accentColor: '#064e3b', landingTitle: null, landingDescription: null, landingActionLabel: null } });
+    mockTenant.mockReturnValue({ kind: 'tenant', slug: 'northstar', name: 'Northstar', enabledModules: ['FEES', 'USERS', 'ATTENDANCE'], branding: { organizationName: 'Northstar', email: null, logoUrl: null, primaryColor: '#047857', accentColor: '#064e3b', landingTitle: null, landingDescription: null, landingActionLabel: null } });
     mockSession.mockReturnValue({
       user: { id: 'tenant-member', tenantName: 'Northstar', firstName: 'Member', lastName: null, email: 'member@example.com', roles: ['TENANT_MEMBER'], permissions: ['user.read'], isPlatformAdmin: false, mustChangePassword: false } as ReturnType<typeof useSession>['user'],
       loading: false,
@@ -72,7 +73,24 @@ describe('application hierarchy navigation', () => {
 
     expect(markup).not.toContain('Fee catalog');
     expect(markup).not.toContain('Fee demands');
+    expect(markup).not.toContain('Attendance');
     expect(markup).toContain('Users and roles');
+  });
+
+  it('shows attendance only when the module and read permission are both enabled', () => {
+    mockPathname.mockReturnValue('/attendance');
+    mockTenant.mockReturnValue({ kind: 'tenant', slug: 'northstar', name: 'Northstar', enabledModules: ['ADMISSIONS', 'ATTENDANCE'], branding: { organizationName: 'Northstar', email: null, logoUrl: null, primaryColor: '#047857', accentColor: '#064e3b', landingTitle: null, landingDescription: null, landingActionLabel: null } });
+    mockSession.mockReturnValue({
+      user: { id: 'tenant-admin', tenantName: 'Northstar', firstName: 'Admin', lastName: null, email: 'admin@example.com', roles: ['TENANT_ADMIN'], permissions: ['attendance.read'], isPlatformAdmin: false, mustChangePassword: false } as ReturnType<typeof useSession>['user'],
+      loading: false,
+      update: () => undefined,
+    });
+
+    const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, 'Attendance content')));
+
+    expect(markup).toContain('href="/attendance"');
+    expect(markup).toContain('Attendance');
+    expect(markup).not.toContain('Platform admins');
   });
 
   it('shows only platform control-plane navigation on the platform host', () => {
@@ -108,6 +126,20 @@ describe('application hierarchy navigation', () => {
     const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, 'Tenant content')));
 
     expect(markup).toContain('Branches and batches');
+  });
+
+  it('uses category terminology for the generic people directory', () => {
+    mockPathname.mockReturnValue('/people');
+    mockTenant.mockReturnValue({ kind: 'tenant', slug: 'northstar', name: 'Northstar Fitness', organizationCategory: 'gym_fitness', enabledModules: ['USERS', 'BRANCHES', 'ORGANIZATION', 'ASSIGNMENTS', 'REPORTS', 'NOTIFICATIONS'], branding: { organizationName: 'Northstar Fitness', email: null, logoUrl: null, primaryColor: '#123456', accentColor: '#654321', landingTitle: null, landingDescription: null, landingActionLabel: null } });
+    mockSession.mockReturnValue({
+      user: { id: 'tenant-admin', tenantName: 'Northstar Fitness', firstName: 'Admin', lastName: null, email: 'admin@example.com', roles: ['TENANT_ADMIN'], permissions: ['user.read'], isPlatformAdmin: false, mustChangePassword: false } as ReturnType<typeof useSession>['user'],
+      loading: false,
+      update: () => undefined,
+    });
+
+    const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, 'Tenant content')));
+
+    expect(markup).toContain('Members directory');
   });
 
   it('does not render tenant navigation for a platform account on a tenant host', () => {
@@ -164,6 +196,16 @@ describe('application hierarchy navigation', () => {
 
     expect(markup).toContain('Invitation registration form');
     expect(markup).not.toContain('Taking you to sign in');
+  });
+
+  it('mounts public auth pages while tenant context is loading so one-time URL fragments are captured', () => {
+    mockPathname.mockReturnValue('/accept-invitation');
+    mockTenant.mockReturnValue({ kind: 'loading' });
+    mockSession.mockReturnValue({ user: null, loading: false, update: () => undefined });
+    const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, 'Invitation registration form')));
+
+    expect(markup).toContain('Invitation registration form');
+    expect(markup).not.toContain('Finding this workspace');
   });
 
   it.each(['/forgot-password', '/reset-password'])('allows public password recovery at %s without requiring an existing sign-in', (path) => {
