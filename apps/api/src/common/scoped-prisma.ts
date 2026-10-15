@@ -727,6 +727,9 @@ function unsafeRelationOperation(): AppError {
 
 const PUBLIC_TENANT_FIELDS = new Set(['id', 'slug', 'name', 'status']);
 const TENANT_PUBLIC_CONTEXT_FIELDS = new Set(['organizationType']);
+const TENANT_DASHBOARD_FIELDS = new Set([
+  'name', 'organizationType', 'enabledModules', 'status', 'subscriptionStatus', 'trialEndsAt', 'subscriptionRenewalAt',
+]);
 
 /**
  * Tenant is an intentionally unscoped directory model only for narrow public
@@ -759,7 +762,14 @@ function assertTenantDirectoryAccess(
     Object.keys(select).length === 1 &&
     TENANT_PUBLIC_CONTEXT_FIELDS.has(Object.keys(select)[0]!) &&
     select[Object.keys(select)[0]!] === true;
-  if (Object.keys(select).some((field) => !PUBLIC_TENANT_FIELDS.has(field) || select[field] !== true) && !ownTenantModulesLookup && !ownTenantPublicContextLookup) {
+  const ownTenantDashboardLookup = !!context?.tenantId &&
+    operation === 'findUnique' &&
+    Object.keys(where).length === 1 &&
+    where.id === context.tenantId &&
+    Object.keys(select).length === TENANT_DASHBOARD_FIELDS.size &&
+    [...TENANT_DASHBOARD_FIELDS].every((field) => select[field] === true);
+  if (Object.keys(select).some((field) => !PUBLIC_TENANT_FIELDS.has(field) || select[field] !== true)
+    && !ownTenantModulesLookup && !ownTenantPublicContextLookup && !ownTenantDashboardLookup) {
     throw AppError.forbidden('Tenant directory access is not permitted.');
   }
 
@@ -782,7 +792,7 @@ function assertTenantDirectoryAccess(
     whereFields.length === 1 &&
     where.id === context.tenantId;
 
-  if (!publicSlugLookup && !publicVerifiedDomainLookup && !currentTenantLookup && !ownTenantModulesLookup && !ownTenantPublicContextLookup) {
+  if (!publicSlugLookup && !publicVerifiedDomainLookup && !currentTenantLookup && !ownTenantModulesLookup && !ownTenantPublicContextLookup && !ownTenantDashboardLookup) {
     throw AppError.forbidden('Tenant directory access is not permitted.');
   }
 }

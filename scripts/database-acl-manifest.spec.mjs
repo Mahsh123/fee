@@ -54,6 +54,7 @@ test('grants reviewed application access and keeps audit v2 direct access closed
       ...AUTHENTICATION_USER_UPDATE_COLUMNS,
       'email', 'phone', 'firstName', 'lastName', 'status', 'updatedBy', 'passwordHash', 'mustChangePassword', 'sessionVersion',
       'invitationTokenHash', 'invitationExpiresAt', 'emailVerifiedAt', 'passwordResetTokenHash', 'passwordResetExpiresAt',
+      'pendingEmail', 'emailChangeTokenHash', 'emailChangeExpiresAt',
     ],
     insert: true,
     delete: false,

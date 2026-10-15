@@ -30,7 +30,7 @@ export class OrganizationService {
     this.assertTenant(tenantId);
     const actor = this.context.require();
     const isOrganizationAdmin = actor.roles?.some((role) => role === 'TENANT_ADMIN' || role === 'TENANT_OWNER') ?? false;
-    const tenant = await this.prisma.db.tenant.findFirst({ where: { id: tenantId }, select: { name: true, organizationType: true, enabledModules: true, status: true, subscriptionStatus: true, trialEndsAt: true, subscriptionRenewalAt: true } });
+    const tenant = await this.prisma.db.tenant.findUnique({ where: { id: tenantId }, select: { name: true, organizationType: true, enabledModules: true, status: true, subscriptionStatus: true, trialEndsAt: true, subscriptionRenewalAt: true } });
     if (!tenant) throw AppError.notFound('Organization');
     const [subscription, branchRows, moduleAccess] = await Promise.all([
       this.prisma.db.tenantSubscription.findFirst({ where: { tenantId, isCurrent: true }, include: { plan: { select: { key: true, name: true } } } }),

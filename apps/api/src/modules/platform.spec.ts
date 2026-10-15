@@ -486,7 +486,7 @@ describe('platform administration tenant boundaries', () => {
     expect(result.entitlements.find(({ entitlementKey }) => entitlementKey === 'MAX_USERS')).toMatchObject({ planLimit: 50, limit: 50, usage: 21 });
   });
 
-  it('updates a tenant module projection under tenant scope and records platform audit attribution', async () => {
+  it('updates a tenant module projection under platform acting scope and records platform audit attribution', async () => {
     const overrideUpsert = vi.fn(async () => ({ id: 'override-a', enabled: false }));
     const tenantUpdate = vi.fn(async () => ({}));
     const tx = {
@@ -495,13 +495,40 @@ describe('platform administration tenant boundaries', () => {
       tenant: { findFirst: vi.fn(async () => ({ enabledModules: ['USERS', 'FEES'] })), update: tenantUpdate },
     };
     const transactionWithRetry = vi.fn(async (work: (transaction: typeof tx) => Promise<unknown>) => work(tx));
-    const { service, runAsSuperAdmin } = platformService({ transactionWithRetry });
+    const { service, context, runAsSuperAdmin } = platformService({ transactionWithRetry });
+    const contextRun = vi.spyOn(context, 'run');
 
     const result = await runAsSuperAdmin(() => service.updateTenantModuleOverride('tenant-a', 'fees', { enabled: false, reason: 'Customer request' }));
 
     expect(overrideUpsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ tenantId: 'tenant-a', moduleKey: 'FEES', enabled: false, reason: 'Customer request' }) }));
     expect(tenantUpdate).toHaveBeenCalledWith({ where: { id: 'tenant-a' }, data: { enabledModules: ['USERS'] } });
     expect(result).toMatchObject({ tenantId: 'tenant-a', moduleKey: 'FEES', enabled: false, enabledModules: ['USERS'] });
+    expect(contextRun).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 'tenant-a', userId: 'super-admin', roles: ['PLATFORM_ADMIN'], isPlatformAdmin: true, actingAsTenantId: 'tenant-a',
+    }), expect.any(Function));
+  });
+
+  it('resends a tenant invitation from a platform acting scope using the tenant workspace hostname', async () => {
+    const expiresAt = new Date('2026-10-15T00:00:00.000Z');
+    const resendInvitation = vi.fn();
+    const { service, context, runAsSuperAdmin } = platformService({
+      tenantFindFirst: vi.fn(async () => ({ id: 'tenant-a', slug: 'northstar', name: 'Northstar', status: 'TRIAL' })),
+      access: { resendInvitation },
+    });
+    let observedScope: ReturnType<TenantContextService['peek']>;
+    resendInvitation.mockImplementation(async () => {
+      observedScope = context.peek();
+      return { id: 'admin-a', invitationExpiresAt: expiresAt };
+    });
+
+    const result = await runAsSuperAdmin(() => service.resendTenantUserInvitation('tenant-a', 'admin-a'));
+
+    expect(result).toEqual({ id: 'admin-a', invitationExpiresAt: expiresAt });
+    expect(resendInvitation).toHaveBeenCalledWith('tenant-a', 'admin-a', expect.any(Function));
+    expect(observedScope).toMatchObject({
+      tenantId: 'tenant-a', userId: 'super-admin', roles: ['PLATFORM_ADMIN'], isPlatformAdmin: true, actingAsTenantId: 'tenant-a',
+      tenantHost: { kind: 'tenant', hostname: 'northstar.localhost', slug: 'northstar', tenantId: 'tenant-a' },
+    });
   });
 
   it('refuses to disable a required core workspace module', async () => {

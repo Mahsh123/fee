@@ -107,7 +107,9 @@ export class AccessService {
 
   async createUser(tenantId: string, input: CreateTenantUserInput, extraAudit?: AccessMutationAudit) {
     this.assertTenant(tenantId);
-    const actorId = this.tenantContext.require().userId;
+    const actor = this.tenantContext.require();
+    const actorId = actor.userId;
+    const tenantActorId = actor.isPlatformAdmin ? undefined : actorId;
     const roleIds = [...new Set(input.roleIds)];
     const passwordHash = await this.passwords.hash(input.temporaryPassword);
     try {
@@ -131,11 +133,11 @@ export class AccessService {
             studentId: input.studentId ?? null,
             guardianId: input.guardianId ?? null,
             tenantPersonId: input.tenantPersonId ?? null,
-            createdBy: actorId ?? null,
+            createdBy: tenantActorId ?? null,
           },
           select: { id: true, email: true, phone: true, firstName: true, lastName: true, status: true, mustChangePassword: true, studentId: true, guardianId: true, tenantPersonId: true, createdAt: true },
         });
-        await tx.userRole.createMany({ data: roles.map((role) => ({ tenantId, userId: id, roleId: role.id, grantedBy: actorId ?? null })) });
+        await tx.userRole.createMany({ data: roles.map((role) => ({ tenantId, userId: id, roleId: role.id, grantedBy: tenantActorId ?? null })) });
         const primaryBranch = await tx.branch.findFirst({
           where: { tenantId, status: 'ACTIVE' },
           orderBy: { createdAt: 'asc' },
@@ -143,13 +145,13 @@ export class AccessService {
         });
         if (!primaryBranch) throw AppError.conflict('NO_ACTIVE_BRANCH', 'Create or activate a branch before adding organization users.');
         await tx.userBranchMembership.create({
-          data: { tenantId, userId: id, branchId: primaryBranch.id, isPrimary: true, grantedBy: actorId ?? null },
-        });
-        await this.audit.record(tx, {
-          tenantId, actorId, action: 'user.created', entityType: 'User', entityId: id,
-          after: { email: user.email, status: user.status, mustChangePassword: true, roleIds },
+          data: { tenantId, userId: id, branchId: primaryBranch.id, isPrimary: true, grantedBy: tenantActorId ?? null },
         });
         if (extraAudit) await extraAudit(tx);
+        else await this.audit.record(tx, {
+          tenantId, actorId: tenantActorId, action: 'user.created', entityType: 'User', entityId: id,
+          after: { email: user.email, status: user.status, mustChangePassword: true, roleIds },
+        });
         return { ...user, roles: roles.map(({ id: roleId, key, name }) => ({ id: roleId, key, name })) };
       });
     } catch (error) {
@@ -257,9 +259,11 @@ export class AccessService {
     return { id: user.id, email: user.email, firstName: user.firstName, status: user.status, invitationExpiresAt: expiresAt };
   }
 
-  async resendInvitation(tenantId: string, userId: string) {
+  async resendInvitation(tenantId: string, userId: string, extraAudit?: AccessMutationAudit) {
     this.assertTenant(tenantId);
-    const actorId = this.tenantContext.require().userId;
+    const actor = this.tenantContext.require();
+    const actorId = actor.userId;
+    const tenantActorId = actor.isPlatformAdmin ? undefined : actorId;
     const host = this.tenantContext.requireTenantHost();
     if (host.kind !== 'tenant' || host.tenantId !== tenantId) throw AppError.forbidden('Invitations can only be sent from this tenant workspace.');
     const token = this.passwords.generateToken();
@@ -273,15 +277,19 @@ export class AccessService {
       await this.assertMayManageTenantAdministrator(tx, tenantId, userId);
       const changed = await tx.user.updateMany({
         where: { tenantId, id: userId, status: current.status, updatedAt: current.updatedAt },
-        data: { status: 'INVITED', invitationTokenHash: tokenHash, invitationExpiresAt: expiresAt, pendingEmail: null, emailChangeTokenHash: null, emailChangeExpiresAt: null, updatedBy: actorId ?? null },
+        data: { status: 'INVITED', invitationTokenHash: tokenHash, invitationExpiresAt: expiresAt, pendingEmail: null, emailChangeTokenHash: null, emailChangeExpiresAt: null, updatedBy: tenantActorId ?? null },
       });
       if (changed.count !== 1) throw AppError.conflict('INVITATION_CHANGED', 'This invitation changed while it was being resent. Reload and retry.');
       await enqueueUserInvitation(tx, { tenantId, userId, email: current.email, firstName: current.firstName, acceptUrl, tokenHash });
-      await this.audit.record(tx, {
-        tenantId, actorId, action: 'user.invitation.resent', entityType: 'User', entityId: userId,
-        before: { invitationExpiresAt: current.invitationExpiresAt?.toISOString() ?? null },
-        after: { invitationExpiresAt: expiresAt.toISOString() },
-      });
+      if (extraAudit) {
+        await extraAudit(tx);
+      } else {
+        await this.audit.record(tx, {
+          tenantId, actorId: tenantActorId, action: 'user.invitation.resent', entityType: 'User', entityId: userId,
+          before: { invitationExpiresAt: current.invitationExpiresAt?.toISOString() ?? null },
+          after: { invitationExpiresAt: expiresAt.toISOString() },
+        });
+      }
       return { id: current.id, email: current.email, status: current.status, invitationExpiresAt: expiresAt };
     });
   }
@@ -313,7 +321,9 @@ export class AccessService {
 
   async assignRoles(tenantId: string, userId: string, input: AssignUserRolesInput, extraAudit?: AccessMutationAudit) {
     this.assertTenant(tenantId);
-    const actorId = this.tenantContext.require().userId;
+    const actor = this.tenantContext.require();
+    const actorId = actor.userId;
+    const tenantActorId = actor.isPlatformAdmin ? undefined : actorId;
     const roleIds = [...new Set(input.roleIds)];
     return this.prisma.transactionWithRetry(async (tx) => {
       const user = await tx.user.findFirst({ where: { tenantId, id: userId, deletedAt: null }, select: { id: true, email: true, studentId: true, guardianId: true, tenantPersonId: true } });
@@ -331,17 +341,19 @@ export class AccessService {
       if (wasAdmin && !remainsAdmin) await this.assertAnotherActiveTenantAdministrator(tx, tenantId, userId);
       const before = existing.map((link) => link.roleId);
       await tx.userRole.deleteMany({ where: { tenantId, userId } });
-      await tx.userRole.createMany({ data: roles.map((role) => ({ tenantId, userId, roleId: role.id, grantedBy: actorId ?? null })) });
+      await tx.userRole.createMany({ data: roles.map((role) => ({ tenantId, userId, roleId: role.id, grantedBy: tenantActorId ?? null })) });
       await tx.refreshToken.updateMany({ where: { tenantId, userId, revokedAt: null }, data: { revokedAt: new Date() } });
-      await this.audit.record(tx, { tenantId, actorId, action: 'user.roles.assigned', entityType: 'User', entityId: userId, before: { roleIds: before }, after: { roleIds } });
       if (extraAudit) await extraAudit(tx);
+      else await this.audit.record(tx, { tenantId, actorId: tenantActorId, action: 'user.roles.assigned', entityType: 'User', entityId: userId, before: { roleIds: before }, after: { roleIds } });
       return { userId, email: user.email, roles: roles.map(({ id, key, name }) => ({ id, key, name })) };
     });
   }
 
   async updateStatus(tenantId: string, userId: string, input: UpdateTenantUserStatusInput, extraAudit?: AccessMutationAudit) {
     this.assertTenant(tenantId);
-    const actorId = this.tenantContext.require().userId;
+    const actor = this.tenantContext.require();
+    const actorId = actor.userId;
+    const tenantActorId = actor.isPlatformAdmin ? undefined : actorId;
     return this.prisma.transactionWithRetry(async (tx) => {
       const user = await tx.user.findFirst({ where: { tenantId, id: userId, deletedAt: null } });
       if (!user) throw AppError.notFound('User');
@@ -359,19 +371,21 @@ export class AccessService {
           invitationTokenHash: null, invitationExpiresAt: null,
           pendingEmail: null, emailChangeTokenHash: null, emailChangeExpiresAt: null,
         }),
-        updatedBy: actorId ?? null,
+        updatedBy: tenantActorId ?? null,
       } });
       if (changed.count !== 1) throw AppError.conflict('USER_CHANGED', 'This user changed while you were updating the account. Reload and retry.');
       if (input.status !== 'ACTIVE') await tx.refreshToken.updateMany({ where: { tenantId, userId, revokedAt: null }, data: { revokedAt: new Date() } });
-      await this.audit.record(tx, { tenantId, actorId, action: 'user.status.updated', entityType: 'User', entityId: userId, before: { status: user.status }, after: { status: input.status } });
       if (extraAudit) await extraAudit(tx);
+      else await this.audit.record(tx, { tenantId, actorId: tenantActorId, action: 'user.status.updated', entityType: 'User', entityId: userId, before: { status: user.status }, after: { status: input.status } });
       return { id: userId, status: input.status };
     });
   }
 
   async updateUserProfile(tenantId: string, userId: string, input: UpdateTenantUserProfileInput, extraAudit?: AccessMutationAudit) {
     this.assertTenant(tenantId);
-    const actorId = this.tenantContext.require().userId;
+    const actor = this.tenantContext.require();
+    const actorId = actor.userId;
+    const tenantActorId = actor.isPlatformAdmin ? undefined : actorId;
     try {
       return await this.prisma.transactionWithRetry(async (tx) => {
         const current = await tx.user.findFirst({ where: { tenantId, id: userId, deletedAt: null } });
@@ -382,7 +396,7 @@ export class AccessService {
         await this.assertMayManageTenantAdministrator(tx, tenantId, userId);
         const changed = await tx.user.updateMany({
           where: { tenantId, id: userId, deletedAt: null, updatedAt: current.updatedAt },
-          data: { ...input, updatedBy: actorId ?? null },
+          data: { ...input, updatedBy: tenantActorId ?? null },
         });
         if (changed.count !== 1) throw AppError.conflict('USER_CHANGED', 'This user changed while the profile was being updated. Reload and retry.');
         const updated = await tx.user.findFirst({
@@ -390,12 +404,12 @@ export class AccessService {
           select: { id: true, email: true, phone: true, firstName: true, lastName: true, status: true, mustChangePassword: true, createdAt: true, updatedAt: true },
         });
         if (!updated) throw AppError.notFound('User');
-        await this.audit.record(tx, {
-          tenantId, actorId, action: 'user.profile.updated', entityType: 'User', entityId: userId,
+        if (extraAudit) await extraAudit(tx);
+        else await this.audit.record(tx, {
+          tenantId, actorId: tenantActorId, action: 'user.profile.updated', entityType: 'User', entityId: userId,
           before: { email: current.email, phone: current.phone, firstName: current.firstName, lastName: current.lastName },
           after: { email: updated.email, phone: updated.phone, firstName: updated.firstName, lastName: updated.lastName },
         });
-        if (extraAudit) await extraAudit(tx);
         return updated;
       });
     } catch (error) {
@@ -406,7 +420,9 @@ export class AccessService {
 
   async resetTemporaryPassword(tenantId: string, userId: string, temporaryPassword: string, extraAudit?: AccessMutationAudit) {
     this.assertTenant(tenantId);
-    const actorId = this.tenantContext.require().userId;
+    const actor = this.tenantContext.require();
+    const actorId = actor.userId;
+    const tenantActorId = actor.isPlatformAdmin ? undefined : actorId;
     const passwordHash = await this.passwords.hash(temporaryPassword);
     return this.prisma.transactionWithRetry(async (tx) => {
       const user = await tx.user.findFirst({ where: { tenantId, id: userId, deletedAt: null }, select: { id: true, email: true, mustChangePassword: true } });
@@ -414,15 +430,15 @@ export class AccessService {
       await this.assertMayManageTenantAdministrator(tx, tenantId, userId);
       const changed = await tx.user.updateMany({
         where: { tenantId, id: userId, deletedAt: null },
-        data: { passwordHash, mustChangePassword: true, failedLoginCount: 0, lockedUntil: null, pendingEmail: null, emailChangeTokenHash: null, emailChangeExpiresAt: null, updatedBy: actorId ?? null },
+        data: { passwordHash, mustChangePassword: true, failedLoginCount: 0, lockedUntil: null, pendingEmail: null, emailChangeTokenHash: null, emailChangeExpiresAt: null, updatedBy: tenantActorId ?? null },
       });
       if (changed.count !== 1) throw AppError.conflict('USER_CHANGED', 'This user changed while the password was being reset. Reload and retry.');
       await tx.refreshToken.updateMany({ where: { tenantId, userId, revokedAt: null }, data: { revokedAt: new Date() } });
-      await this.audit.record(tx, {
-        tenantId, actorId, action: 'user.temporary_password.reset', entityType: 'User', entityId: userId,
+      if (extraAudit) await extraAudit(tx);
+      else await this.audit.record(tx, {
+        tenantId, actorId: tenantActorId, action: 'user.temporary_password.reset', entityType: 'User', entityId: userId,
         before: { mustChangePassword: user.mustChangePassword }, after: { mustChangePassword: true },
       });
-      if (extraAudit) await extraAudit(tx);
       return { id: user.id, email: user.email, mustChangePassword: true };
     });
   }
@@ -567,7 +583,10 @@ export class AccessService {
   }
 
   private assertTenantAdministratorActor(): void {
-    if (!this.tenantContext.require().roles?.some(isTenantAdminRole)) {
+    const actor = this.tenantContext.require();
+    const tenantAdmin = actor.roles?.some(isTenantAdminRole);
+    const scopedPlatformAdmin = actor.isPlatformAdmin && actor.roles?.includes('PLATFORM_ADMIN') && actor.actingAsTenantId === actor.tenantId;
+    if (!tenantAdmin && !scopedPlatformAdmin) {
       throw AppError.forbidden('Only a tenant administrator can change organization-wide role configuration.');
     }
   }

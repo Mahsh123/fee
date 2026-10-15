@@ -64,7 +64,7 @@ describe('authentication request audit context', () => {
     expect(prisma.transactionWithRetry).not.toHaveBeenCalled();
   });
 
-  it('accepts a live tenant invitation once, verifies the address, and stores only a password hash', async () => {
+  it.each(['ACTIVE', 'TRIAL'] as const)('accepts a live tenant invitation once for a %s workspace, verifies the address, and stores only a password hash', async (status) => {
     const auditRecord = vi.fn(async () => undefined);
     const userFindFirst = vi.fn(async () => ({ id: 'user-a', email: 'invitee@example.test', status: 'INVITED' }));
     const userUpdateMany = vi.fn(async () => ({ count: 1 }));
@@ -76,7 +76,7 @@ describe('authentication request audit context', () => {
       { hash: vi.fn(async () => 'new-password-hash'), hashToken: vi.fn(() => 'sha256-invitation-token') } as never,
       {} as never, { record: auditRecord } as never, {} as never, tenantContext,
     );
-    const tenantHost = { kind: 'tenant' as const, hostname: 'north.example.test', baseDomain: 'example.test', tenantId: 'tenant-a', slug: 'north', name: 'North', status: 'ACTIVE' as const };
+    const tenantHost = { kind: 'tenant' as const, hostname: 'north.example.test', baseDomain: 'example.test', tenantId: 'tenant-a', slug: 'north', name: 'North', status };
 
     const result = await tenantContext.run({ requestId: 'invite-accept-0001', tenantHost }, () =>
       service.acceptInvitation({ token: 'clear-once-token', password: 'correct horse battery staple' }, { ip: '203.0.113.5' }),

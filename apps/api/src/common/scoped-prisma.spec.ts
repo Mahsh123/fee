@@ -516,6 +516,12 @@ describe('tenant-scoped Prisma boundary', () => {
         run({ model: 'Tenant', operation: 'findUnique', args: { where: { id: 'tenant-a' }, select: { organizationType: true } } }),
       ).resolves.toMatchObject({ where: { id: 'tenant-a' } });
       await expect(
+        run({ model: 'Tenant', operation: 'findUnique', args: { where: { id: 'tenant-a' }, select: { name: true, organizationType: true, enabledModules: true, status: true, subscriptionStatus: true, trialEndsAt: true, subscriptionRenewalAt: true } } }),
+      ).resolves.toMatchObject({ where: { id: 'tenant-a' } });
+      await expect(
+        run({ model: 'Tenant', operation: 'findUnique', args: { where: { id: 'tenant-a' }, select: { name: true, organizationType: true, enabledModules: true, status: true, subscriptionStatus: true, trialEndsAt: true, subscriptionRenewalAt: true, contactEmail: true } } }),
+      ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      await expect(
         run({ model: 'Tenant', operation: 'findUnique', args: { where: { id: 'tenant-a' }, select: { organizationType: true, enabledModules: true } } }),
       ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
       await expect(

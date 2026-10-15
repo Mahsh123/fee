@@ -48,6 +48,10 @@ export type { ChangePasswordInput, LoginInput, RefreshInput } from '@fee/validat
 /** The transaction client type, aliased for readability at call sites. */
 type TransactionHandle = Parameters<Parameters<PrismaService['transaction']>[0]>[0];
 
+function isWorkspaceAvailable(status: string): boolean {
+  return status === 'ACTIVE' || status === 'TRIAL';
+}
+
 export interface SessionUser {
   id: string;
   tenantId: string;
@@ -232,7 +236,7 @@ export class AuthService {
 
   async requestTenantRegistration(input: PublicTenantRegistrationInput, context: { requestId?: string; ip?: string; userAgent?: string }): Promise<{ submitted: true }> {
     const host = this.tenantContext.requireTenantHost();
-    if (host.kind !== 'tenant' || host.status !== 'ACTIVE') {
+    if (host.kind !== 'tenant' || !isWorkspaceAvailable(host.status)) {
       throw AppError.conflict('REGISTRATION_UNAVAILABLE', 'This workspace is not accepting registrations right now. Contact its administrator.');
     }
 
@@ -338,7 +342,7 @@ export class AuthService {
       });
       if (!platformTenant || platformTenant.status !== 'ACTIVE') throw new UnauthorizedException('This platform invitation is not available.');
       tenantId = platformTenant.id;
-    } else if (host.kind === 'tenant' && host.status === 'ACTIVE') {
+    } else if (host.kind === 'tenant' && isWorkspaceAvailable(host.status)) {
       tenantId = host.tenantId;
     } else {
       throw new UnauthorizedException('This invitation is not available for this workspace.');
@@ -381,7 +385,7 @@ export class AuthService {
       const platformTenant = await this.prisma.db.tenant.findUnique({ where: { slug: PLATFORM_SYSTEM_TENANT_SLUG }, select: { id: true, status: true } });
       if (!platformTenant || platformTenant.status !== 'ACTIVE') return { submitted: true };
       tenantId = platformTenant.id;
-    } else if (host.kind === 'tenant' && host.status === 'ACTIVE') {
+    } else if (host.kind === 'tenant' && isWorkspaceAvailable(host.status)) {
       tenantId = host.tenantId;
     } else {
       return { submitted: true };
@@ -426,7 +430,7 @@ export class AuthService {
       const platformTenant = await this.prisma.db.tenant.findUnique({ where: { slug: PLATFORM_SYSTEM_TENANT_SLUG }, select: { id: true, status: true } });
       if (!platformTenant || platformTenant.status !== 'ACTIVE') throw AppError.validation('This password reset link is invalid or expired. Request a new one.');
       tenantId = platformTenant.id;
-    } else if (host.kind === 'tenant' && host.status === 'ACTIVE') {
+    } else if (host.kind === 'tenant' && isWorkspaceAvailable(host.status)) {
       tenantId = host.tenantId;
     } else {
       throw AppError.validation('This password reset link is invalid or expired. Request a new one.');
@@ -662,7 +666,7 @@ export class AuthService {
     const host = this.tenantContext.requireTenantHost();
     const isPlatformAdmin = host.kind === 'platform';
     if (host.kind === 'tenant') {
-      if (host.status !== 'ACTIVE' || host.tenantId !== tenantId || actor.isPlatformAdmin) throw AppError.forbidden('Use the matching active workspace hostname to change this email.');
+      if (!isWorkspaceAvailable(host.status) || host.tenantId !== tenantId || actor.isPlatformAdmin) throw AppError.forbidden('Use the matching active workspace hostname to change this email.');
     } else if (host.kind === 'platform') {
       const platformTenant = await this.prisma.db.tenant.findUnique({ where: { slug: PLATFORM_SYSTEM_TENANT_SLUG }, select: { id: true, status: true } });
       if (!platformTenant || platformTenant.id !== tenantId || platformTenant.status !== 'ACTIVE' || !actor.isPlatformAdmin) throw AppError.forbidden('Use the platform hostname to change a platform administrator email.');
@@ -710,7 +714,7 @@ export class AuthService {
       const platformTenant = await this.prisma.db.tenant.findUnique({ where: { slug: PLATFORM_SYSTEM_TENANT_SLUG }, select: { id: true, status: true } });
       if (!platformTenant || platformTenant.status !== 'ACTIVE') throw new UnauthorizedException('This platform email verification is not available.');
       tenantId = platformTenant.id;
-    } else if (host.kind === 'tenant' && host.status === 'ACTIVE') {
+    } else if (host.kind === 'tenant' && isWorkspaceAvailable(host.status)) {
       tenantId = host.tenantId;
     } else {
       throw new UnauthorizedException('This email verification is not available for this workspace.');

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
-import { ArrowRight, Check, KeyRound, MailCheck } from 'lucide-react';
+import { ArrowRight, Check, CheckCircle2, Eye, EyeOff, KeyRound, MailCheck, ShieldCheck } from 'lucide-react';
 import { ApiError, apiRequest } from '../../lib/api';
 import { useTenant } from '../../components/tenant-provider';
 
@@ -14,6 +14,8 @@ export default function AcceptInvitationPage() {
   const [busy, setBusy] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const invitationFragmentCaptured = useRef(false);
 
   useEffect(() => {
@@ -40,27 +42,54 @@ export default function AcceptInvitationPage() {
     } finally { setBusy(false); }
   }
 
-  return <main id="main-content" className="auth-page">
-    <section className="auth-card surface-panel">
-      <div className="auth-brand-mark"><MailCheck size={24} /></div>
-      {accepted ? <>
+  const workspaceName = tenant.kind === 'tenant' ? tenant.branding.organizationName : 'Wasl platform';
+  const supportsInvitations = tenant.kind === 'tenant' || platformHost;
+
+  return <main id="main-content" className="auth-page invitation-page">
+    <section className="invitation-card" aria-labelledby="invitation-title">
+      <header className="invitation-brand-row">
+        <Link className="invitation-wasl-brand" href="/" aria-label="Wasl home">
+          <span className="invitation-wasl-mark" aria-hidden="true">W</span>
+          <span>Wasl <span lang="ar" dir="rtl">وصل</span></span>
+        </Link>
+        <span className="invitation-brand-divider" aria-hidden="true" />
+        <span className="invitation-workspace-name" title={workspaceName}>{workspaceName}</span>
+      </header>
+
+      {accepted ? <div className="invitation-success">
+        <div className="invitation-icon invitation-icon-success"><CheckCircle2 size={25} /></div>
         <p className="eyebrow">INVITATION ACCEPTED</p>
-        <h1>Your account is ready</h1>
-        <p className="muted">{platformHost ? 'Your email is verified. Sign in to the platform control plane with the password you just created.' : 'Your email is verified. Sign in to your organization workspace with the password you just created.'}</p>
-        <Link className="button button-primary auth-submit" href="/login">Continue to sign in <ArrowRight size={16} /></Link>
-      </> : <>
-        <p className="eyebrow">{platformHost ? 'PLATFORM ACCESS' : 'WORKSPACE ACCESS'}</p>
-        <h1>{platformHost ? 'Accept your platform invitation' : 'Accept your invitation'}</h1>
-        <p className="muted">{platformHost ? 'Choose a password to activate your platform administrator account.' : 'Choose a password to activate your organization account.'}</p>
-        {error && <div className="notice notice-error" role="alert">{error}</div>}
-        {!ready ? <p className="muted">Checking invitation link…</p> : !token ? <div className="notice notice-error" role="alert">This invitation link is missing or expired. Ask your {platformHost ? 'platform' : 'organization'} administrator to send a new one.</div> : <form className="auth-form" onSubmit={accept}>
-          <label htmlFor="password">New password</label>
-          <div className="auth-input-wrap"><KeyRound size={17} /><input id="password" name="password" type="password" minLength={12} maxLength={200} autoComplete="new-password" required /></div>
-          <small>Use at least 12 characters.</small>
-          <label htmlFor="confirmPassword">Confirm password</label>
-          <div className="auth-input-wrap"><Check size={17} /><input id="confirmPassword" name="confirmPassword" type="password" minLength={12} maxLength={200} autoComplete="new-password" required /></div>
-          <button className="button button-primary auth-submit" disabled={busy}>{busy ? 'Activating account…' : 'Accept invitation'} <ArrowRight size={16} /></button>
-        </form>}
+        <h1 id="invitation-title">Your account is ready</h1>
+        <p className="invitation-description">Your email is verified. Sign in to {platformHost ? 'the Wasl platform' : workspaceName} with the password you just created.</p>
+        <Link className="button button-primary invitation-submit" href="/login">Continue to sign in <ArrowRight size={17} /></Link>
+      </div> : <>
+        <div className="invitation-intro">
+          <div className="invitation-icon"><MailCheck size={24} /></div>
+          <p className="eyebrow">SECURE ACCOUNT ACTIVATION</p>
+          <h1 id="invitation-title">Set your password</h1>
+          <p className="invitation-description">Activate your {platformHost ? 'Wasl platform administrator' : `${workspaceName} workspace`} account to get started.</p>
+        </div>
+
+        {error && <div className="notice notice-error invitation-error" role="alert">{error}</div>}
+        {!ready ? <p className="invitation-status" role="status">Checking your secure invitation…</p>
+          : !supportsInvitations ? <div className="notice notice-error invitation-error" role="alert">This workspace is unavailable. Open the invitation on the organization’s own link or ask its administrator to resend it.</div>
+            : !token ? <div className="notice notice-error invitation-error" role="alert">This invitation link is missing or expired. Ask your {platformHost ? 'platform' : 'organization'} administrator to send a new one.</div>
+              : <form className="invitation-form" onSubmit={accept} aria-busy={busy}>
+                <label className="invitation-field" htmlFor="password">New password
+                  <span className="invitation-input-shell"><KeyRound size={17} aria-hidden="true" /><input id="password" name="password" type={showPassword ? 'text' : 'password'} minLength={12} maxLength={200} autoComplete="new-password" aria-describedby="password-help" required />
+                    <button type="button" className="invitation-visibility" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button>
+                  </span>
+                </label>
+                <p className="invitation-hint" id="password-help">Use at least 12 characters. A longer passphrase is easier to remember.</p>
+                <label className="invitation-field" htmlFor="confirmPassword">Confirm password
+                  <span className="invitation-input-shell"><Check size={17} aria-hidden="true" /><input id="confirmPassword" name="confirmPassword" type={showConfirmPassword ? 'text' : 'password'} minLength={12} maxLength={200} autoComplete="new-password" required />
+                    <button type="button" className="invitation-visibility" onClick={() => setShowConfirmPassword((visible) => !visible)} aria-label={showConfirmPassword ? 'Hide confirmation' : 'Show confirmation'}>{showConfirmPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button>
+                  </span>
+                </label>
+                <button className="button button-primary invitation-submit" disabled={busy}>{busy ? 'Activating your account…' : 'Accept invitation'} <ArrowRight size={17} /></button>
+              </form>}
+
+        <footer className="invitation-security-note"><ShieldCheck size={16} /><span>This secure link can be used once and expires automatically.</span></footer>
       </>}
     </section>
   </main>;

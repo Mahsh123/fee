@@ -639,7 +639,7 @@ export class PlatformService {
       throw AppError.validation('Core workspace modules are always enabled and cannot be disabled.');
     }
     await this.assertManagedTenant(tenantId);
-    return this.withTenantScope(actor, tenantId, () => this.prisma.transactionWithRetry(async (tx) => {
+    return this.withPlatformTenantScope(actor, tenantId, () => this.prisma.transactionWithRetry(async (tx) => {
       const existing = await tx.tenantModuleOverride.findUnique({ where: { tenantId_moduleKey: { tenantId, moduleKey: normalizedKey } } });
       if (input.enabled === null) {
         await tx.tenantModuleOverride.deleteMany({ where: { tenantId, moduleKey: normalizedKey } });
@@ -947,12 +947,34 @@ export class PlatformService {
   async createTenantAdmin(tenantId: string, input: CreateTenantAdminInput) {
     const actor = this.requirePlatformAdmin();
     await this.assertManagedTenant(tenantId);
-    const created = await this.withTenantScope(actor, tenantId, async () => {
+    const created = await this.withPlatformTenantScope(actor, tenantId, async () => {
       const role = await this.prisma.db.role.findFirst({ where: { tenantId, key: 'TENANT_ADMIN' }, select: { id: true } });
       if (!role) throw AppError.conflict('TENANT_ADMIN_ROLE_NOT_READY', 'This workspace does not have its tenant administrator role.');
       return this.access.createUser(tenantId, { ...input, roleIds: [role.id] }, this.platformMutationAudit(actor, tenantId, 'platform.tenant_admin.created', 'User', input.email, { email: input.email, role: 'TENANT_ADMIN' }));
     });
     return { ...created, roles: [{ id: created.roles[0]?.id, key: 'TENANT_ADMIN', name: 'Tenant administrator' }] };
+  }
+
+  async resendTenantUserInvitation(tenantId: string, userId: string) {
+    const actor = this.requirePlatformAdmin();
+    await this.assertManagedTenant(tenantId);
+    const tenant = await this.prisma.db.tenant.findFirst({
+      where: { id: tenantId },
+      select: { id: true, slug: true, name: true, status: true },
+    });
+    if (!tenant) throw AppError.notFound('Tenant');
+    return this.withPlatformTenantScope(actor, tenantId, () => {
+      this.tenantContext.establishTenantHost({
+        kind: 'tenant', hostname: `${tenant.slug}.${this.config.tenantBaseDomain}`,
+        baseDomain: this.config.tenantBaseDomain, tenantId: tenant.id, slug: tenant.slug,
+        name: tenant.name, status: tenant.status,
+      });
+      return this.access.resendInvitation(
+        tenantId,
+        userId,
+        this.platformMutationAudit(actor, tenantId, 'platform.tenant_user.invitation_resent', 'User', userId, { invitationTokenRotated: true }),
+      );
+    });
   }
 
   async createTenantUser(tenantId: string, input: CreateTenantUserInput) {
@@ -968,7 +990,7 @@ export class PlatformService {
   async updateTenantUserProfile(tenantId: string, userId: string, input: UpdateTenantUserProfileInput) {
     const actor = this.requirePlatformAdmin();
     await this.assertManagedTenant(tenantId);
-    return this.withTenantScope(actor, tenantId, () => this.access.updateUserProfile(
+    return this.withPlatformTenantScope(actor, tenantId, () => this.access.updateUserProfile(
       tenantId, userId, input,
       this.platformMutationAudit(actor, tenantId, 'platform.tenant_user.profile_updated', 'User', userId, { email: input.email }),
     ));
@@ -977,7 +999,7 @@ export class PlatformService {
   async updateTenantUserStatus(tenantId: string, userId: string, input: UpdateTenantUserStatusInput) {
     const actor = this.requirePlatformAdmin();
     await this.assertManagedTenant(tenantId);
-    return this.withTenantScope(actor, tenantId, () => this.access.updateStatus(
+    return this.withPlatformTenantScope(actor, tenantId, () => this.access.updateStatus(
       tenantId, userId, input,
       this.platformMutationAudit(actor, tenantId, 'platform.tenant_user.status_updated', 'User', userId, { status: input.status }),
     ));
@@ -986,7 +1008,7 @@ export class PlatformService {
   async assignTenantUserRoles(tenantId: string, userId: string, input: AssignUserRolesInput) {
     const actor = this.requirePlatformAdmin();
     await this.assertManagedTenant(tenantId);
-    return this.withTenantScope(actor, tenantId, () => this.access.assignRoles(
+    return this.withPlatformTenantScope(actor, tenantId, () => this.access.assignRoles(
       tenantId, userId, input,
       this.platformMutationAudit(actor, tenantId, 'platform.tenant_user.roles_updated', 'User', userId, { roleIds: input.roleIds }),
     ));
@@ -995,7 +1017,7 @@ export class PlatformService {
   async resetTenantUserPassword(tenantId: string, userId: string, input: { temporaryPassword: string }) {
     const actor = this.requirePlatformAdmin();
     await this.assertManagedTenant(tenantId);
-    return this.withTenantScope(actor, tenantId, () => this.access.resetTemporaryPassword(
+    return this.withPlatformTenantScope(actor, tenantId, () => this.access.resetTemporaryPassword(
       tenantId, userId, input.temporaryPassword,
       this.platformMutationAudit(actor, tenantId, 'platform.tenant_user.password_reset', 'User', userId, { mustChangePassword: true }),
     ));
@@ -1516,6 +1538,7 @@ export class PlatformDirectoryController {
   @Get('tenants/:tenantId/admins') listTenantAdmins(@Param('tenantId') id: string, @Query() query: Record<string, unknown>) { return this.platform.listTenantAdmins(id, query); }
   @Get('tenants/:tenantId/roles') listTenantRoles(@Param('tenantId') id: string) { return this.platform.listTenantRoles(id); }
   @Post('tenants/:tenantId/admins') @UsePipes(new ZodValidationPipe(createTenantAdminSchema)) createTenantAdmin(@Param('tenantId') id: string, @Body() body: CreateTenantAdminInput) { return this.platform.createTenantAdmin(id, body); }
+  @Post('tenants/:tenantId/users/:userId/invitation') resendTenantUserInvitation(@Param('tenantId') tenantId: string, @Param('userId') userId: string) { return this.platform.resendTenantUserInvitation(tenantId, userId); }
   @Patch('tenants/:tenantId/users/:userId') @UsePipes(new ZodValidationPipe(updateTenantUserProfileSchema)) updateTenantUser(@Param('tenantId') tenantId: string, @Param('userId') userId: string, @Body() body: UpdateTenantUserProfileInput) { return this.platform.updateTenantUserProfile(tenantId, userId, body); }
   @Patch('tenants/:tenantId/users/:userId/roles') @UsePipes(new ZodValidationPipe(assignUserRolesSchema)) assignTenantUserRoles(@Param('tenantId') tenantId: string, @Param('userId') userId: string, @Body() body: AssignUserRolesInput) { return this.platform.assignTenantUserRoles(tenantId, userId, body); }
   @Patch('tenants/:tenantId/users/:userId/status') @UsePipes(new ZodValidationPipe(updateTenantUserStatusSchema)) updateTenantUserStatus(@Param('tenantId') tenantId: string, @Param('userId') userId: string, @Body() body: UpdateTenantUserStatusInput) { return this.platform.updateTenantUserStatus(tenantId, userId, body); }
