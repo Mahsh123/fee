@@ -18,6 +18,10 @@ export interface SessionUser {
   studentId: string | null;
   guardianId: string | null;
   mustChangePassword: boolean;
+  /** True when an authenticator app is enrolled for this account. */
+  mfaEnabled?: boolean;
+  /** Platform operators are expected to enrol before acting on the control plane. */
+  mfaSetupRequired?: boolean;
 }
 
 export interface BrowserSession {

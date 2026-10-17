@@ -57,7 +57,10 @@ describe('organization API tenant and branch scope', () => {
     const membershipFindMany = vi.fn(async () => [{ userId: 'user-a' }, { userId: 'user-b' }]);
     const userCount = vi.fn(async () => 1);
     const database = {
-      tenant: { findFirst: vi.fn(async () => ({ name: 'North', organizationType: 'COMPANY', enabledModules: ['USERS', 'BRANCHES'], status: 'ACTIVE', subscriptionStatus: 'ACTIVE', trialEndsAt: null, subscriptionRenewalAt: null })) },
+      tenant: {
+        findUnique: vi.fn(async () => ({ name: 'North', organizationType: 'COMPANY', enabledModules: ['USERS', 'BRANCHES'], status: 'ACTIVE', subscriptionStatus: 'ACTIVE', trialEndsAt: null, subscriptionRenewalAt: null })),
+        findFirst: vi.fn(async () => ({ name: 'North', organizationType: 'COMPANY', enabledModules: ['USERS', 'BRANCHES'], status: 'ACTIVE', subscriptionStatus: 'ACTIVE', trialEndsAt: null, subscriptionRenewalAt: null })),
+      },
       tenantSubscription: { findFirst: vi.fn(async () => ({ status: 'ACTIVE', billingInterval: 'MONTHLY', trialEndsAt: null, currentPeriodEnd: new Date('2026-11-06'), plan: { key: 'team', name: 'Team', modules: [...CORE_TENANT_MODULES].map((moduleKey) => ({ moduleKey, enabled: true })) } })) },
       tenantModuleOverride: { findMany: vi.fn(async () => []) },
       branch: { findMany: branchFindMany },

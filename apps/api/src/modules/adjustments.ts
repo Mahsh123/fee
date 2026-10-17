@@ -179,6 +179,9 @@ export class AdjustmentsService {
       const adjustment = await tx.adjustment.findFirst({ where: { tenantId, id } });
       if (!adjustment) throw AppError.notFound('Adjustment');
       if (adjustment.status !== 'PENDING_APPROVAL' || !adjustment.approvalRequestId) throw AppError.conflict('ADJUSTMENT_NOT_PENDING_APPROVAL', 'This adjustment is not awaiting approval.');
+      if (input.approved && adjustment.requestedBy && adjustment.requestedBy === actorId && !this.tenantContext.require().isPlatformAdmin) {
+        throw AppError.conflict('SELF_APPROVAL_FORBIDDEN', 'An adjustment must be approved by someone other than the person who requested it.');
+      }
       const approval = await tx.approvalRequest.findFirst({ where: { tenantId, id: adjustment.approvalRequestId, actionType: approvalActionType(adjustment.kind), status: 'PENDING' } });
       if (!approval) throw AppError.conflict('APPROVAL_NOT_PENDING', 'The adjustment approval request is no longer pending.');
       const changedApproval = await tx.approvalRequest.updateMany({ where: { tenantId, id: approval.id, status: 'PENDING' }, data: { status: input.approved ? 'APPROVED' : 'REJECTED', decidedBy: actorId, decidedAt: new Date(), decisionNote: input.note ?? null } });

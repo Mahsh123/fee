@@ -60,3 +60,7 @@ Thumbs.db
 # Prisma generated client (created by `prisma generate`)
 packages/database/src/generated/
 prisma/prototypes/db-001-setnull/generated/
+
+# Flutter local build state
+apps/mobile/.dart_tool/
+apps/mobile/build/

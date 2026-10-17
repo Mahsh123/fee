@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Injectable, Module, Param, Patch, Post, Query, UsePipes } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { randomUUID } from 'node:crypto';
-import { accessTierForRoles, DEFAULT_ROLE_PERMISSIONS, PERMISSION_GROUPS, PERMISSIONS, ROLE_KEYS, type RoleKey } from '@fee/types';
+import { accessTierForRoles, DEFAULT_ROLE_PERMISSIONS, isOwnerOnlyPermission, PERMISSION_GROUPS, PERMISSIONS, ROLE_KEYS, type RoleKey } from '@fee/types';
 import { isUniqueViolation, type TransactionClient } from '@fee/database';
 import {
   assignUserRolesSchema,
@@ -22,6 +22,8 @@ import {
   type CreateTenantRoleInput,
   type UpdateTenantRoleInput,
   type UpdateTenantUserStatusInput,
+  transferTenantOwnershipSchema,
+  type TransferTenantOwnershipInput,
 } from '@fee/validation';
 import { AppError } from '../common/errors';
 import { AuditService } from '../common/financial';
@@ -117,6 +119,7 @@ export class AccessService {
         await this.assertSeatAvailable(tx, tenantId);
         const roles = await this.assertRoleIds(tx, tenantId, roleIds);
         this.assertMayAssignTenantAdministratorRole(roles.map((role) => role.key));
+        this.assertRoleScopeCovered(roles, []);
         await this.assertPortalIdentity(tx, tenantId, roles.map((role) => role.key), input.studentId ?? null, input.guardianId ?? null, input.tenantPersonId ?? null, undefined, input.email);
         const id = cryptoRandomId();
         const user = await tx.user.create({
@@ -227,6 +230,7 @@ export class AccessService {
       const units = await tx.organizationUnit.findMany({ where: { tenantId, id: { in: organizationUnitIds }, active: true }, select: { id: true } });
       if (units.length !== organizationUnitIds.length) throw AppError.validation('Choose active groups from this organization.');
     }
+    this.assertRoleScopeCovered(roles, organizationUnitIds);
 
     const passwordHash = await this.passwords.hash(this.passwords.generateToken());
     const token = this.passwords.generateToken();
@@ -339,6 +343,13 @@ export class AccessService {
       const wasAdmin = existing.some((link) => isTenantAdminRole(existingRoleById.get(link.roleId)?.key));
       const remainsAdmin = roles.some((role) => isTenantAdminRole(role.key));
       if (wasAdmin && !remainsAdmin) await this.assertAnotherActiveTenantAdministrator(tx, tenantId, userId);
+      const wasOwner = existingRoles.some((role) => role.key === 'TENANT_OWNER');
+      const remainsOwner = roles.some((role) => role.key === 'TENANT_OWNER');
+      if (wasOwner && !remainsOwner) {
+        if (actor.userId === userId) throw AppError.conflict('OWNER_TRANSFER_REQUIRED', 'Transfer workspace ownership to another administrator instead of removing your own owner role.');
+        await this.assertAnotherActiveOwner(tx, tenantId, userId);
+      }
+      await this.assertUserCoveredByRoleScope(tx, tenantId, roles, userId);
       const before = existing.map((link) => link.roleId);
       await tx.userRole.deleteMany({ where: { tenantId, userId } });
       await tx.userRole.createMany({ data: roles.map((role) => ({ tenantId, userId, roleId: role.id, grantedBy: tenantActorId ?? null })) });
@@ -467,6 +478,7 @@ export class AccessService {
       isSystem: role.isSystem,
       active: role.active,
       permissionsConfigured: role.permissionsConfigured,
+      scopeUnitIds: role.scopeUnitIds,
       permissionKeys: role.permissionsConfigured
         ? (permissionsByRole.get(role.id) ?? []).sort()
         : [...(DEFAULT_ROLE_PERMISSIONS[role.key as RoleKey] ?? [])].sort(),
@@ -485,9 +497,11 @@ export class AccessService {
           : [];
         const permissionKeys = [...new Set(input.permissionKeys)];
         if (permissions.length !== permissionKeys.length) throw AppError.validation('One or more selected permissions are not available. Reload the permission list.');
+        this.assertPermissionGrantAllowed(permissionKeys, []);
+        const scopeUnitIds = await this.assertScopeUnits(tx, tenantId, input.scopeUnitIds ?? []);
         const role = await tx.role.create({ data: {
           tenantId, key: input.key, name: input.name, description: input.description ?? null,
-          isSystem: false, active: true, permissionsConfigured: true,
+          isSystem: false, active: true, permissionsConfigured: true, scopeUnitIds,
         } });
         if (permissions.length) await tx.rolePermission.createMany({ data: permissions.map(({ id: permissionId }) => ({ tenantId, roleId: role.id, permissionId })) });
         await this.audit.record(tx, { tenantId, actorId, action: 'role.created', entityType: 'Role', entityId: role.id, after: { key: role.key, name: role.name, permissionKeys } });
@@ -507,10 +521,15 @@ export class AccessService {
       const role = await tx.role.findFirst({ where: { tenantId, id: roleId } });
       if (!role || role.key === 'PLATFORM_ADMIN') throw AppError.notFound('Role');
       if (role.isSystem && input.active === false) throw AppError.conflict('SYSTEM_ROLE_ACTIVE', 'Built-in roles cannot be deactivated.');
+      if (isTenantAdminRole(role.key) && (input.scopeUnitIds?.length ?? 0) > 0) {
+        throw AppError.conflict('TENANT_ADMIN_SCOPE', 'A workspace administrator role is organization-wide and cannot be limited to groups.');
+      }
+      const scopeUnitIds = input.scopeUnitIds === undefined ? undefined : await this.assertScopeUnits(tx, tenantId, input.scopeUnitIds);
       const changed = await tx.role.updateMany({ where: { tenantId, id: roleId, updatedAt: role.updatedAt }, data: {
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.description !== undefined ? { description: input.description } : {}),
         ...(input.active !== undefined ? { active: input.active } : {}),
+        ...(scopeUnitIds !== undefined ? { scopeUnitIds } : {}),
       } });
       if (changed.count !== 1) throw AppError.conflict('ROLE_CHANGED', 'This role changed while it was being updated. Reload and retry.');
       const links = await tx.userRole.findMany({ where: { tenantId, roleId }, select: { userId: true } });
@@ -565,6 +584,7 @@ export class AccessService {
         }
       }
       const before = role.permissionsConfigured ? existingPermissionKeys : [...(DEFAULT_ROLE_PERMISSIONS[role.key as RoleKey] ?? [])].sort();
+      this.assertPermissionGrantAllowed(permissionKeys, before);
       const members = await tx.userRole.findMany({ where: { tenantId, roleId }, select: { userId: true } });
       const roleChanged = await tx.role.updateMany({ where: { tenantId, id: roleId, updatedAt: role.updatedAt }, data: { permissionsConfigured: true } });
       if (roleChanged.count !== 1) throw AppError.conflict('ROLE_CHANGED', 'This role changed while permissions were being saved. Reload and retry.');
@@ -577,9 +597,9 @@ export class AccessService {
   }
 
   private async assertRoleIds(tx: TransactionClient, tenantId: string, roleIds: string[]) {
-    const roles = await tx.role.findMany({ where: { tenantId, id: { in: roleIds }, key: { not: 'PLATFORM_ADMIN' }, active: true }, select: { id: true, key: true, name: true } });
+    const roles = await tx.role.findMany({ where: { tenantId, id: { in: roleIds }, key: { not: 'PLATFORM_ADMIN' }, active: true }, select: { id: true, key: true, name: true, scopeUnitIds: true } });
     if (roles.length !== roleIds.length) throw AppError.validation('Choose roles that belong to this organization.');
-    return roles;
+    return roles.map((role) => ({ ...role, scopeUnitIds: role.scopeUnitIds ?? [] }));
   }
 
   private assertTenantAdministratorActor(): void {
@@ -591,20 +611,125 @@ export class AccessService {
     }
   }
 
+  private isPlatformOperator(): boolean {
+    const actor = this.tenantContext.require();
+    return Boolean(actor.isPlatformAdmin && actor.roles?.includes('PLATFORM_ADMIN'));
+  }
+
+  private isOwnerActor(): boolean {
+    if (this.isPlatformOperator()) return true;
+    return Boolean(this.tenantContext.require().roles?.includes('TENANT_OWNER'));
+  }
+
+  private assertOwnerActor(message = 'Only the workspace owner can perform this change.'): void {
+    if (!this.isOwnerActor()) throw AppError.forbidden(message);
+  }
+
   private assertMayAssignTenantAdministratorRole(roleKeys: string[]): void {
+    if (roleKeys.includes('TENANT_OWNER')) this.assertOwnerActor('Only the workspace owner can grant the owner role.');
     if (roleKeys.some(isTenantAdminRole)) this.assertTenantAdministratorActor();
   }
 
   private assertMayManageTenantAdministratorRoles(roleKeys: string[]): void {
+    if (roleKeys.includes('TENANT_OWNER')) this.assertOwnerActor('The workspace owner account can only be changed by the owner or a platform operator.');
     if (roleKeys.some(isTenantAdminRole)) this.assertTenantAdministratorActor();
   }
 
   private async assertMayManageTenantAdministrator(tx: TransactionClient, tenantId: string, userId: string): Promise<void> {
-    if (this.tenantContext.require().roles?.some(isTenantAdminRole)) return;
     const links = await tx.userRole.findMany({ where: { tenantId, userId }, select: { roleId: true } });
     if (!links.length) return;
     const roles = await tx.role.findMany({ where: { tenantId, id: { in: links.map((link) => link.roleId) } }, select: { key: true } });
     this.assertMayManageTenantAdministratorRoles(roles.map((role) => role.key));
+  }
+
+  /**
+   * A tenant administrator may edit role permissions, but not beyond their own
+   * authority: no self-granted approval rights and no permission the actor does
+   * not already hold. Platform operators keep the break-glass path.
+   */
+  private assertPermissionGrantAllowed(keys: string[], existingKeys: string[]): void {
+    if (this.isPlatformOperator()) return;
+    if (keys.some(isOwnerOnlyPermission)) {
+      this.assertOwnerActor('Only the workspace owner can grant refund or adjustment approval.');
+    }
+    const held = new Set(this.tenantContext.require().permissions ?? []);
+    const overreach = keys.filter((key) => !existingKeys.includes(key) && !held.has(key));
+    if (overreach.length) throw AppError.forbidden(`You cannot grant permissions you do not hold: ${overreach.join(', ')}.`);
+  }
+
+  private async assertScopeUnits(tx: TransactionClient, tenantId: string, unitIds: string[]): Promise<string[]> {
+    const ids = [...new Set(unitIds)];
+    if (!ids.length) return [];
+    const units = await tx.organizationUnit.findMany({ where: { tenantId, id: { in: ids }, active: true }, select: { id: true } });
+    if (units.length !== ids.length) throw AppError.validation('Choose active groups from this organization for the role scope.');
+    return ids;
+  }
+
+  private assertRoleScopeCovered(roles: Array<{ key: string; scopeUnitIds?: string[] }>, unitIds: string[]): void {
+    const scoped = roles.filter((role) => (role.scopeUnitIds?.length ?? 0) > 0);
+    if (!scoped.length) return;
+    const assigned = new Set(unitIds);
+    const missing = scoped.some((role) => (role.scopeUnitIds ?? []).some((unitId) => !assigned.has(unitId)));
+    if (missing) throw AppError.validation('A group-scoped role can only be assigned to a member of those groups.');
+  }
+
+  private async assertUserCoveredByRoleScope(tx: TransactionClient, tenantId: string, roles: Array<{ key: string; scopeUnitIds?: string[] }>, userId: string): Promise<void> {
+    if (!roles.some((role) => (role.scopeUnitIds?.length ?? 0) > 0)) return;
+    const memberships = await tx.userOrganizationMembership.findMany({ where: { tenantId, userId }, select: { unitId: true } });
+    this.assertRoleScopeCovered(roles, memberships.map(({ unitId }) => unitId));
+  }
+
+  private async assertAnotherActiveOwner(tx: TransactionClient, tenantId: string, userId: string): Promise<void> {
+    const ownerRoles = await tx.role.findMany({ where: { tenantId, key: 'TENANT_OWNER' }, select: { id: true } });
+    if (!ownerRoles.length) throw AppError.conflict('OWNER_ROLE_MISSING', 'This workspace has no owner role. Repair the built-in roles before changing ownership.');
+    const links = await tx.userRole.findMany({ where: { tenantId, roleId: { in: ownerRoles.map(({ id }) => id) }, userId: { not: userId } }, select: { userId: true } });
+    const userIds = [...new Set(links.map(({ userId: id }) => id))];
+    const owners = userIds.length ? await tx.user.count({ where: { tenantId, id: { in: userIds }, status: 'ACTIVE', deletedAt: null } }) : 0;
+    if (owners < 1) throw AppError.conflict('LAST_OWNER', 'Transfer ownership to another administrator before removing the only active owner.');
+  }
+
+  /**
+   * Ownership is a single, accountable person per workspace. Transferring it
+   * requires the current password so a borrowed session cannot silently hand
+   * the workspace to another account.
+   */
+  async transferOwner(tenantId: string, input: TransferTenantOwnershipInput) {
+    this.assertTenant(tenantId);
+    const actor = this.tenantContext.require();
+    const actorId = actor.userId;
+    const tenantActorId = actor.isPlatformAdmin ? undefined : actorId;
+    const platform = this.isPlatformOperator();
+    if (!platform) this.assertOwnerActor('Only the workspace owner can transfer ownership.');
+    if (input.userId === actorId) throw AppError.validation('Choose another administrator to own this workspace.');
+    return this.prisma.transactionWithRetry(async (tx) => {
+      if (!platform) {
+        const self = await tx.user.findFirst({ where: { tenantId, id: actorId }, select: { passwordHash: true } });
+        if (!self || !input.currentPassword || !(await this.passwords.verify(input.currentPassword, self.passwordHash))) {
+          throw AppError.forbidden('Enter your current password to transfer ownership.');
+        }
+      }
+      const target = await tx.user.findFirst({
+        where: { tenantId, id: input.userId, status: 'ACTIVE', deletedAt: null },
+        select: { id: true, email: true, emailVerifiedAt: true },
+      });
+      if (!target) throw AppError.validation('Choose an active member of this organization as the new owner.');
+      if (!target.emailVerifiedAt) throw AppError.conflict('OWNER_NOT_VERIFIED', 'The new owner must verify their email address before taking ownership.');
+      const ownerRole = await tx.role.findFirst({ where: { tenantId, key: 'TENANT_OWNER' }, select: { id: true } });
+      if (!ownerRole) throw AppError.conflict('OWNER_ROLE_MISSING', 'This workspace has no owner role. Repair the built-in roles before transferring ownership.');
+      const adminRoleIds = await tx.role.findMany({ where: { tenantId, key: { in: ['TENANT_ADMIN', 'TENANT_OWNER'] }, active: true }, select: { id: true } });
+      const targetAdminLink = await tx.userRole.findFirst({ where: { tenantId, userId: target.id, roleId: { in: adminRoleIds.map(({ id }) => id) } }, select: { roleId: true } });
+      if (!targetAdminLink) throw AppError.validation('Promote this member to workspace administrator before transferring ownership.');
+      await tx.userRole.deleteMany({ where: { tenantId, roleId: ownerRole.id, userId: { not: target.id } } });
+      const existingLink = await tx.userRole.findFirst({ where: { tenantId, userId: target.id, roleId: ownerRole.id }, select: { id: true } });
+      if (!existingLink) await tx.userRole.create({ data: { tenantId, userId: target.id, roleId: ownerRole.id, grantedBy: tenantActorId ?? null } });
+      const affectedUserIds = [...new Set([actorId, target.id].filter((id): id is string => Boolean(id)))];
+      await tx.refreshToken.updateMany({ where: { tenantId, userId: { in: affectedUserIds }, revokedAt: null }, data: { revokedAt: new Date() } });
+      await this.audit.record(tx, {
+        tenantId, actorId: tenantActorId, action: 'tenant.owner.transferred', entityType: 'Tenant', entityId: tenantId,
+        before: { ownerUserId: actorId }, after: { ownerUserId: target.id, ownerEmail: target.email },
+      });
+      return { ownerUserId: target.id, previousOwnerUserId: actorId };
+    });
   }
 
   private async assertSeatAvailable(tx: TransactionClient, tenantId: string): Promise<void> {
@@ -667,6 +792,7 @@ export class AccessController {
   constructor(private readonly access: AccessService) {}
 
   @Get('users') @RequirePermissions(PERMISSIONS.USER_READ) listUsers(@CurrentTenant() tenant: string, @Query() query: Record<string, unknown>) { return this.access.listUsers(tenant, query); }
+  @Post('owners/transfer') @RequirePermissions(PERMISSIONS.ROLE_ASSIGN) @UsePipes(new ZodValidationPipe(transferTenantOwnershipSchema)) @ApiOperation({ summary: 'Transfer accountable workspace ownership to another administrator' }) transferOwner(@CurrentTenant() tenant: string, @Body() body: TransferTenantOwnershipInput) { return this.access.transferOwner(tenant, body); }
   @Post('users') @RequirePermissions(PERMISSIONS.USER_CREATE, PERMISSIONS.ROLE_ASSIGN) @UsePipes(new ZodValidationPipe(inviteTenantUserSchema)) @ApiOperation({ summary: 'Add a tenant user and send a secure activation invitation' }) createUser(@CurrentTenant() tenant: string, @Body() body: InviteTenantUserInput) { return this.access.inviteUser(tenant, body); }
   @Post('users/invitations') @RequirePermissions(PERMISSIONS.USER_CREATE, PERMISSIONS.ROLE_ASSIGN) @UsePipes(new ZodValidationPipe(inviteTenantUserSchema)) @ApiOperation({ summary: 'Create an invited tenant user and queue an expiring acceptance email' }) inviteUser(@CurrentTenant() tenant: string, @Body() body: InviteTenantUserInput) { return this.access.inviteUser(tenant, body); }
   @Post('users/bulk-invitations') @RequirePermissions(PERMISSIONS.USER_CREATE, PERMISSIONS.ROLE_ASSIGN) @UsePipes(new ZodValidationPipe(bulkInviteTenantUsersSchema)) @ApiOperation({ summary: 'Validate and atomically invite up to 100 tenant users from a reviewed import' }) bulkInviteUsers(@CurrentTenant() tenant: string, @Body() body: BulkInviteTenantUsersInput) { return this.access.inviteUsersBulk(tenant, body); }

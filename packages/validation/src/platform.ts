@@ -114,10 +114,17 @@ export const updateTenantProfileSchema = z.object({
   countryCode: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/).nullable().optional(),
 }).refine((value) => Object.keys(value).length > 0, 'Change at least one institution field.');
 
+export const platformOperatorRoleSchema = z.enum(['OWNER', 'BILLING', 'SUPPORT']);
+
 export const createPlatformAdminSchema = z.object({
   email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
   firstName: z.string().trim().min(1).max(120),
   lastName: z.string().trim().max(120).nullable().optional(),
+  operatorRole: platformOperatorRoleSchema.optional(),
+});
+
+export const updatePlatformAdminRoleSchema = z.object({
+  operatorRole: platformOperatorRoleSchema,
 });
 
 export const createTenantAdminSchema = z.object({
@@ -126,6 +133,8 @@ export const createTenantAdminSchema = z.object({
   firstName: z.string().trim().min(1).max(120),
   lastName: z.string().trim().max(120).nullable().optional(),
   temporaryPassword: z.string().min(12, 'Use a temporary password with at least 12 characters.').max(200),
+  /** Create the accountable workspace owner. Falls back to an administrator when the workspace already has an owner. */
+  ownership: z.enum(['OWNER', 'ADMIN']).default('ADMIN'),
 });
 
 export const updatePlatformAdminProfileSchema = z.object({
@@ -151,5 +160,7 @@ export type RequestPlatformRefundInput = z.infer<typeof requestPlatformRefundSch
 export type UpdatePlatformRefundStatusInput = z.infer<typeof updatePlatformRefundStatusSchema>;
 export type UpdateTenantProfileInput = z.infer<typeof updateTenantProfileSchema>;
 export type CreatePlatformAdminInput = z.infer<typeof createPlatformAdminSchema>;
+export type UpdatePlatformAdminRoleInput = z.infer<typeof updatePlatformAdminRoleSchema>;
 export type CreateTenantAdminInput = z.infer<typeof createTenantAdminSchema>;
+export type PlatformOperatorRole = z.infer<typeof platformOperatorRoleSchema>;
 export type UpdatePlatformAdminProfileInput = z.infer<typeof updatePlatformAdminProfileSchema>;

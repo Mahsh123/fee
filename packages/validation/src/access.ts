@@ -54,6 +54,11 @@ export const changeOwnEmailSchema = z.object({
 export const acceptEmailChangeSchema = z.object({ token: z.string().min(32).max(200) });
 
 export const assignUserRolesSchema = z.object({ roleIds: z.array(uuid).min(1).max(100) });
+export const transferTenantOwnershipSchema = z.object({
+  userId: uuid,
+  /** Required for a tenant owner; platform operators transfer without a workspace password. */
+  currentPassword: z.string().max(200).optional(),
+});
 export const updateTenantUserStatusSchema = z.object({ status: z.enum(['ACTIVE', 'SUSPENDED', 'DISABLED']) });
 export const updateTenantUserProfileSchema = z.object({
   email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()).optional(),
@@ -75,11 +80,13 @@ export const createTenantRoleSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
   permissionKeys: z.array(z.string().trim().min(1).max(100)).max(500).default([]),
+  scopeUnitIds: z.array(uuid).max(100).refine((ids) => new Set(ids).size === ids.length, 'A group can be scoped only once.').optional(),
 });
 export const updateTenantRoleSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   description: z.string().trim().max(500).nullable().optional(),
   active: z.boolean().optional(),
+  scopeUnitIds: z.array(uuid).max(100).refine((ids) => new Set(ids).size === ids.length, 'A group can be scoped only once.').optional(),
 }).refine((value) => Object.keys(value).length > 0, 'Change at least one role field.');
 
 export type CreateTenantUserInput = z.infer<typeof createTenantUserSchema>;
@@ -90,6 +97,7 @@ export type PublicTenantRegistrationInput = z.infer<typeof publicTenantRegistrat
 export type ChangeOwnEmailInput = z.infer<typeof changeOwnEmailSchema>;
 export type AcceptEmailChangeInput = z.infer<typeof acceptEmailChangeSchema>;
 export type AssignUserRolesInput = z.infer<typeof assignUserRolesSchema>;
+export type TransferTenantOwnershipInput = z.infer<typeof transferTenantOwnershipSchema>;
 export type UpdateTenantUserStatusInput = z.infer<typeof updateTenantUserStatusSchema>;
 export type UpdateTenantUserProfileInput = z.infer<typeof updateTenantUserProfileSchema>;
 export type UpdateOwnProfileInput = z.infer<typeof updateOwnProfileSchema>;

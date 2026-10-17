@@ -55,6 +55,7 @@ test('grants reviewed application access and keeps audit v2 direct access closed
       'email', 'phone', 'firstName', 'lastName', 'status', 'updatedBy', 'passwordHash', 'mustChangePassword', 'sessionVersion',
       'invitationTokenHash', 'invitationExpiresAt', 'emailVerifiedAt', 'passwordResetTokenHash', 'passwordResetExpiresAt',
       'pendingEmail', 'emailChangeTokenHash', 'emailChangeExpiresAt',
+      'platformRole', 'mfaSecret', 'mfaEnabledAt', 'mfaRecoveryCodeHashes',
     ],
     insert: true,
     delete: false,

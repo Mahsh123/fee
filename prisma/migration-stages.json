@@ -76,7 +76,10 @@
     "20261012000200_attendance",
     "20261012000300_tenant_identity_guard_extensions",
     "20261013000100_generic_tenant_people_fee_attendance",
-    "20261013000500_fee_assignment_cycles"
+    "20261013000500_fee_assignment_cycles",
+    "20261017000100_user_mfa_platform_operator",
+    "20261017000200_tenant_owner_backfill",
+    "20261017000300_branch_manager_role"
   ],
   "postIndexMigrations": [
     "20260930000100_tenant_composite_foreign_keys_add",

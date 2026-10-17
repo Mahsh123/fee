@@ -302,6 +302,7 @@ export function buildAclManifest(inventory, { auditMode = 'legacy', hasCapabilit
       'invitationTokenHash', 'invitationExpiresAt', 'emailVerifiedAt',
       'passwordResetTokenHash', 'passwordResetExpiresAt', 'pendingEmail',
       'emailChangeTokenHash', 'emailChangeExpiresAt',
+      'platformRole', 'mfaSecret', 'mfaEnabledAt', 'mfaRecoveryCodeHashes',
     ],
   };
   for (const [model, fields] of Object.entries(updateFields)) addModelAccess(model, { update: fields });

@@ -31,7 +31,12 @@ function platformService(options: {
         findUnique: options.tenantFindUnique ?? (tenantDb.findUnique as ReturnType<typeof vi.fn> | undefined) ?? vi.fn().mockResolvedValue(null),
         count: (tenantDb.count as ReturnType<typeof vi.fn> | undefined) ?? vi.fn().mockResolvedValue(0),
       },
-      user: { ...userDb, count: (userDb.count as ReturnType<typeof vi.fn> | undefined) ?? vi.fn().mockResolvedValue(0) },
+      user: {
+        ...userDb,
+        count: (userDb.count as ReturnType<typeof vi.fn> | undefined) ?? vi.fn().mockResolvedValue(0),
+        // Platform operator tier is read for every tiered control-plane action.
+        findUnique: (userDb.findUnique as ReturnType<typeof vi.fn> | undefined) ?? vi.fn().mockResolvedValue({ platformRole: 'OWNER' }),
+      },
       tenantProvisioningOperation: {
         ...provisioningOperationDb,
         findUnique: (provisioningOperationDb.findUnique as ReturnType<typeof vi.fn> | undefined) ?? vi.fn().mockResolvedValue(null),
@@ -231,8 +236,8 @@ describe('platform administration tenant boundaries', () => {
     expect(result).toMatchObject([{ id: 'subscription-a', plan: { key: 'starter', currency: 'INR' }, invoices: [{ id: 'invoice-a', payments: [{ id: 'payment-a', refunds: [{ id: 'refund-a' }] }] }] }]);
   });
 
-  it('provisions a normalized subdomain and initial Tenant Admin atomically', async () => {
-    const roles = ['TENANT_OWNER', 'TENANT_ADMIN', 'TENANT_MEMBER', 'REPORT_VIEWER'].map((key) => ({ id: `role-${key}`, key }));
+  it('provisions a normalized subdomain and the initial workspace owner atomically', async () => {
+    const roles = ['TENANT_OWNER', 'TENANT_ADMIN', 'TENANT_MEMBER', 'BRANCH_MANAGER', 'REPORT_VIEWER', 'WORKSPACE_PERSON'].map((key) => ({ id: `role-${key}`, key }));
     const permissionRows = [...new Set(Object.values(PERMISSIONS))].map((key) => ({ id: `permission-${key}`, key }));
     const tenantCreate = vi.fn(async ({ data }: { data: { id: string; slug: string; name: string } }) => ({
       ...data,
@@ -285,7 +290,8 @@ describe('platform administration tenant boundaries', () => {
     expect(tx.paymentMethod.createMany).not.toHaveBeenCalled();
     expect(userCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ tenantId: created.id, email: 'admin@abc-academy.test', status: 'INVITED', mustChangePassword: true, invitationTokenHash: 'hash:tenant-admin-invitation-token', invitationExpiresAt: expect.any(Date) }) }));
     expect(tx.outboxEvent.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ eventType: 'USER_INVITATION', tenantId: created.id, aggregateId: 'tenant-admin-id', payload: expect.objectContaining({ email: 'admin@abc-academy.test', acceptUrl: 'http://abc-academy.localhost:3000/accept-invitation#tenant-admin-invitation-token' }) }) }));
-    expect(tx.userRole.create).toHaveBeenCalledWith({ data: { tenantId: created.id, userId: 'tenant-admin-id', roleId: 'role-TENANT_ADMIN' } });
+    // The first account owns the workspace; administrators are added from there.
+    expect(tx.userRole.create).toHaveBeenCalledWith({ data: { tenantId: created.id, userId: 'tenant-admin-id', roleId: 'role-TENANT_OWNER' } });
     expect(prisma.db.tenant.findUnique).toHaveBeenCalledWith({ where: { slug: 'abc-academy' }, select: { id: true } });
     expect(tx.tenantProvisioningOperation.create).toHaveBeenCalledOnce();
     expect(JSON.stringify(savedOperation)).not.toContain('tenant-admin-invitation-token');
@@ -611,5 +617,40 @@ describe('platform administration tenant boundaries', () => {
     await expect(runAsSuperAdmin(() => service.createTenantDomain('tenant-a', { domain: 'customer.localhost' })))
       .rejects.toMatchObject({ code: 'TENANT_DOMAIN_USES_PLATFORM_BASE' });
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe('platform operator tiers', () => {
+  const planInput = {
+    key: 'growth',
+    name: 'Growth',
+    monthlyPrice: 2500,
+    yearlyPrice: 25_000,
+    currency: 'INR',
+    trialDays: 14,
+    active: true,
+    modules: ['WORKSPACE'],
+    entitlements: [{ entitlementKey: 'USERS', limitValue: 25 }],
+  };
+
+  it('keeps a read-only support operator out of plan, billing, and operator changes', async () => {
+    const { service, runAsSuperAdmin } = platformService({ db: { user: { findUnique: vi.fn(async () => ({ platformRole: 'SUPPORT' })) } } });
+
+    await expect(runAsSuperAdmin(() => service.createPlan(planInput))).rejects.toMatchObject({ status: 403 });
+    await expect(runAsSuperAdmin(() => service.recordPlatformPayment('invoice-a', { amount: 10, currency: 'INR' } as never))).rejects.toMatchObject({ status: 403 });
+    await expect(runAsSuperAdmin(() => service.updateSuperAdminStatus('admin-b', { status: 'DISABLED' }))).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('lets a billing operator reconcile without plan or operator authority', async () => {
+    const { service, runAsSuperAdmin } = platformService({ db: { user: { findUnique: vi.fn(async () => ({ platformRole: 'BILLING' })) } } });
+
+    await expect(runAsSuperAdmin(() => service.createPlan(planInput))).rejects.toMatchObject({ status: 403 });
+    await expect(runAsSuperAdmin(() => service.updateSuperAdminStatus('admin-b', { status: 'DISABLED' }))).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('treats an unknown operator tier as no access', async () => {
+    const { service, runAsSuperAdmin } = platformService({ db: { user: { findUnique: vi.fn(async () => null) } } });
+
+    await expect(runAsSuperAdmin(() => service.createPlan(planInput))).rejects.toMatchObject({ status: 403 });
   });
 });

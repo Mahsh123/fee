@@ -42,14 +42,22 @@ describe('tenant role administration boundaries', () => {
       context.establish({ tenantId: 'tenant-a', userId: 'branch-user', isPlatformAdmin: false, roles: ['BRANCH_MANAGER'] });
       expect(() => access.assertTenantAdministratorActor()).toThrow(/Only a tenant administrator/);
       expect(() => access.assertMayAssignTenantAdministratorRole(['TENANT_ADMIN'])).toThrow(/Only a tenant administrator/);
-      expect(() => access.assertMayManageTenantAdministratorRoles(['TENANT_OWNER'])).toThrow(/Only a tenant administrator/);
+      expect(() => access.assertMayManageTenantAdministratorRoles(['TENANT_OWNER'])).toThrow(/workspace owner/);
       expect(() => access.assertMayAssignTenantAdministratorRole(['BRANCH_MANAGER'])).not.toThrow();
     });
     await context.run({ requestId: 'tenant-admin-role-boundary', isPlatformAdmin: false }, async () => {
       context.establish({ tenantId: 'tenant-a', userId: 'tenant-admin', isPlatformAdmin: false, roles: ['TENANT_ADMIN'] });
       expect(() => access.assertTenantAdministratorActor()).not.toThrow();
-      expect(() => access.assertMayAssignTenantAdministratorRole(['TENANT_OWNER'])).not.toThrow();
+      // Administrators manage administrators; only the owner mints or edits the owner account.
+      expect(() => access.assertMayAssignTenantAdministratorRole(['TENANT_ADMIN'])).not.toThrow();
+      expect(() => access.assertMayAssignTenantAdministratorRole(['TENANT_OWNER'])).toThrow(/workspace owner/);
       expect(() => access.assertMayManageTenantAdministratorRoles(['TENANT_ADMIN'])).not.toThrow();
+      expect(() => access.assertMayManageTenantAdministratorRoles(['TENANT_OWNER'])).toThrow(/workspace owner/);
+    });
+    await context.run({ requestId: 'tenant-owner-role-boundary', isPlatformAdmin: false }, async () => {
+      context.establish({ tenantId: 'tenant-a', userId: 'tenant-owner', isPlatformAdmin: false, roles: ['TENANT_OWNER'] });
+      expect(() => access.assertMayAssignTenantAdministratorRole(['TENANT_OWNER'])).not.toThrow();
+      expect(() => access.assertMayManageTenantAdministratorRoles(['TENANT_OWNER'])).not.toThrow();
     });
   });
 });
@@ -115,5 +123,75 @@ describe('tenant user invitations', () => {
       ],
     }))).rejects.toMatchObject({ status: 422 });
     expect(transactionWithRetry).not.toHaveBeenCalled();
+  });
+});
+
+describe('workspace ownership and permission ceilings', () => {
+  const service = (context: TenantContextService) => new AccessService({} as never, {} as never, {} as never, context) as unknown as {
+    assertOwnerActor(message?: string): void;
+    assertPermissionGrantAllowed(keys: string[], existingKeys: string[]): void;
+    assertRoleScopeCovered(roles: Array<{ key: string; scopeUnitIds?: string[] }>, unitIds: string[]): void;
+  };
+
+  it('only the owner or a platform operator may act as the accountable owner', async () => {
+    const context = new TenantContextService();
+    const access = service(context);
+
+    await context.run({ requestId: 'owner-boundary-tenant-user', isPlatformAdmin: false }, async () => {
+      context.establish({ tenantId: 'tenant-a', userId: 'member', isPlatformAdmin: false, roles: ['FINANCE_ADMIN'] });
+      expect(() => access.assertOwnerActor()).toThrow(/workspace owner/);
+    });
+    await context.run({ requestId: 'owner-boundary-tenant-admin', isPlatformAdmin: false }, async () => {
+      context.establish({ tenantId: 'tenant-a', userId: 'admin', isPlatformAdmin: false, roles: ['TENANT_ADMIN'] });
+      expect(() => access.assertOwnerActor()).toThrow(/workspace owner/);
+    });
+    await context.run({ requestId: 'owner-boundary-owner', isPlatformAdmin: false }, async () => {
+      context.establish({ tenantId: 'tenant-a', userId: 'owner', isPlatformAdmin: false, roles: ['TENANT_OWNER'] });
+      expect(() => access.assertOwnerActor()).not.toThrow();
+    });
+    await context.run({ requestId: 'owner-boundary-platform', isPlatformAdmin: true }, async () => {
+      context.establish({ tenantId: 'platform-tenant', userId: 'operator', isPlatformAdmin: true, roles: ['PLATFORM_ADMIN'] });
+      expect(() => access.assertOwnerActor()).not.toThrow();
+    });
+  });
+
+  it('stops an administrator granting approval rights or permissions they do not hold', async () => {
+    const context = new TenantContextService();
+    const access = service(context);
+
+    await context.run({ requestId: 'permission-ceiling-admin', isPlatformAdmin: false }, async () => {
+      context.establish({
+        tenantId: 'tenant-a', userId: 'admin', isPlatformAdmin: false, roles: ['TENANT_ADMIN'],
+        permissions: ['role.assign', 'user.create', 'fee.structure.publish'],
+      });
+      // The two owner-only approvals cannot be self-granted.
+      expect(() => access.assertPermissionGrantAllowed(['payment.refund.approve'], [])).toThrow(/workspace owner/);
+      // Nor can an administrator hand out a permission they do not hold themselves.
+      expect(() => access.assertPermissionGrantAllowed(['adjustment.create'], [])).toThrow(/cannot grant permissions you do not hold/);
+      // Holding the permission already is a legitimate grant.
+      expect(() => access.assertPermissionGrantAllowed(['fee.structure.publish'], [])).not.toThrow();
+      // Re-sending an unchanged existing key is not an escalation.
+      expect(() => access.assertPermissionGrantAllowed(['adjustment.create'], ['adjustment.create'])).not.toThrow();
+    });
+
+    await context.run({ requestId: 'permission-ceiling-owner', isPlatformAdmin: false }, async () => {
+      context.establish({
+        tenantId: 'tenant-a', userId: 'owner', isPlatformAdmin: false, roles: ['TENANT_OWNER'],
+        permissions: ['payment.refund.approve', 'adjustment.approve'],
+      });
+      expect(() => access.assertPermissionGrantAllowed(['payment.refund.approve', 'adjustment.approve'], [])).not.toThrow();
+    });
+  });
+
+  it('refuses a group-scoped role for a member outside those groups', async () => {
+    const context = new TenantContextService();
+    const access = service(context);
+
+    await context.run({ requestId: 'role-scope-guard', isPlatformAdmin: false }, async () => {
+      context.establish({ tenantId: 'tenant-a', userId: 'admin', isPlatformAdmin: false, roles: ['TENANT_ADMIN'] });
+      expect(() => access.assertRoleScopeCovered([{ key: 'BRANCH_COORDINATOR', scopeUnitIds: ['unit-a'] }], ['unit-b'])).toThrow(/group-scoped role/);
+      expect(() => access.assertRoleScopeCovered([{ key: 'BRANCH_COORDINATOR', scopeUnitIds: ['unit-a'] }], ['unit-a', 'unit-b'])).not.toThrow();
+      expect(() => access.assertRoleScopeCovered([{ key: 'BRANCH_COORDINATOR', scopeUnitIds: [] }], [])).not.toThrow();
+    });
   });
 });

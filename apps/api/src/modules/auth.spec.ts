@@ -404,3 +404,44 @@ describe('authentication request audit context', () => {
     expect(refreshFindUnique).toHaveBeenCalledOnce();
   });
 });
+
+describe('two-factor sign-in enforcement', () => {
+  function serviceWithEnrolledUser(context: TenantContextService) {
+    const user = {
+      id: 'user-owner', tenantId: 'tenant-a', email: 'owner@north.test', passwordHash: 'stored-hash',
+      status: 'ACTIVE', isPlatformAdmin: false, deletedAt: null,
+      mfaEnabledAt: new Date('2026-10-17T09:00:00.000Z'), mfaSecret: 'JBSWY3DPEHPK3PXP',
+      sessionVersion: 0, studentId: null, guardianId: null, mustChangePassword: false, failedLoginCount: 0, lockedUntil: null,
+    };
+    const prisma = {
+      db: {
+        user: { findFirst: vi.fn(async () => user), update: vi.fn(async () => user) },
+      },
+      transaction: vi.fn(),
+      transactionWithRetry: vi.fn(),
+    };
+    const passwords = { verify: vi.fn(async () => true), burnTime: vi.fn(async () => undefined) };
+    return { service: new AuthService(prisma as never, passwords as never, {} as never, { record: vi.fn() } as never, {} as never, context), prisma };
+  }
+
+  it('refuses a password-only sign-in when an authenticator is enrolled', async () => {
+    const context = new TenantContextService();
+    const { service } = serviceWithEnrolledUser(context);
+    const tenantHost = { kind: 'tenant' as const, hostname: 'north.localhost', baseDomain: 'localhost', tenantId: 'tenant-a', slug: 'north', name: 'North', status: 'ACTIVE' as const };
+
+    await expect(context.run({ requestId: 'mfa-required', tenantHost }, () =>
+      service.login({ email: 'owner@north.test', password: 'correct-password' }, {}),
+    )).rejects.toMatchObject({ code: 'MFA_REQUIRED', status: 401 });
+  });
+
+  it('rejects an incorrect authenticator code before issuing a session', async () => {
+    const context = new TenantContextService();
+    const { service, prisma } = serviceWithEnrolledUser(context);
+    const tenantHost = { kind: 'tenant' as const, hostname: 'north.localhost', baseDomain: 'localhost', tenantId: 'tenant-a', slug: 'north', name: 'North', status: 'ACTIVE' as const };
+
+    await expect(context.run({ requestId: 'mfa-invalid', tenantHost }, () =>
+      service.login({ email: 'owner@north.test', password: 'correct-password', mfaCode: '000000' }, {}),
+    )).rejects.toMatchObject({ code: 'MFA_INVALID', status: 401 });
+    expect(prisma.db.user.update).not.toHaveBeenCalled();
+  });
+});

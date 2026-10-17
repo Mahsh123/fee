@@ -8,7 +8,7 @@ import { buildImportPreview } from '../../lib/user-import';
 import { useSession } from '../../components/session-provider';
 import { Check, Download, ShieldCheck, Upload, UserPlus, UsersRound } from 'lucide-react';
 
-interface Role { id: string; key: string; name: string; description: string | null; isSystem: boolean; active: boolean; permissionsConfigured: boolean; permissionKeys: string[] }
+interface Role { id: string; key: string; name: string; description: string | null; isSystem: boolean; active: boolean; permissionsConfigured: boolean; permissionKeys: string[]; scopeUnitIds: string[] }
 interface Permission { id: string; key: string; resource: string; action: string; description: string | null; sensitive: boolean }
 interface PermissionGroup { group: string; permissions: string[] }
 interface UserRow {
@@ -37,6 +37,9 @@ export default function AccessPage() {
   const [createOrganizationUnitIds, setCreateOrganizationUnitIds] = useState<string[]>([]);
   const [selectedRoleId, setSelectedRoleId] = useState('');
   const [selectedPermissionKeys, setSelectedPermissionKeys] = useState<string[]>([]);
+  const [selectedScopeUnitIds, setSelectedScopeUnitIds] = useState<string[]>([]);
+  const [transferTargetId, setTransferTargetId] = useState('');
+  const [transferPassword, setTransferPassword] = useState('');
   const [userRoleSelections, setUserRoleSelections] = useState<Record<string, string[]>>({});
   const [userBranchSelections, setUserBranchSelections] = useState<Record<string, string[]>>({});
   const [userUnitSelections, setUserUnitSelections] = useState<Record<string, string[]>>({});
@@ -55,6 +58,8 @@ export default function AccessPage() {
   const canReadRoles = hasPermission(user, 'role.read');
   const canReadPermissions = hasPermission(user, 'permission.read');
   const canManageTenantRoles = Boolean(user?.roles.some((role) => role === 'TENANT_ADMIN' || role === 'TENANT_OWNER'));
+  // Only the accountable owner can hand the workspace to another administrator.
+  const isOwner = Boolean(user?.roles.includes('TENANT_OWNER'));
   const canReadBranches = hasPermission(user, 'branch.read');
   const canReadOrganizationUnits = hasPermission(user, 'organization.unit.read');
   const canManageBranchScope = canManageTenantRoles && hasPermission(user, 'branch.manage');
@@ -96,6 +101,7 @@ export default function AccessPage() {
   const selectedCreateRoleKeys = roles.filter((role) => createRoleIds.includes(role.id)).map((role) => role.key);
   const importPreview = useMemo(() => buildImportPreview(importText, roles, branches, organizationUnits), [importText, roles, branches, organizationUnits]);
   useEffect(() => { setSelectedPermissionKeys(selectedRole?.permissionKeys ?? []); }, [selectedRoleId, selectedRole?.permissionKeys.join('|')]);
+  useEffect(() => { setSelectedScopeUnitIds(selectedRole?.scopeUnitIds ?? []); }, [selectedRoleId, selectedRole?.scopeUnitIds.join('|')]);
 
   async function createUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError(''); setNotice('');
@@ -239,6 +245,30 @@ export default function AccessPage() {
     finally { setBusy(false); }
   }
 
+  async function saveRoleScope(role: Role) {
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await apiRequest(`/access/roles/${role.id}`, { method: 'PATCH', body: JSON.stringify({ scopeUnitIds: selectedScopeUnitIds }) });
+      setNotice(selectedScopeUnitIds.length
+        ? `Role “${role.name}” is now limited to ${selectedScopeUnitIds.length} group${selectedScopeUnitIds.length === 1 ? '' : 's'}; it can only be assigned to members of those groups.`
+        : `Role “${role.name}” is no longer group-limited.`);
+      await load();
+    } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'The role scope could not be saved.'); }
+    finally { setBusy(false); }
+  }
+
+  async function transferOwnership(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError(''); setNotice('');
+    try {
+      const result = await apiRequest<{ ownerUserId: string }>('/access/owners/transfer', { method: 'POST', body: JSON.stringify({ userId: transferTargetId, currentPassword: transferPassword }) });
+      const target = users.find((row) => row.id === result.ownerUserId);
+      setTransferPassword(''); setTransferTargetId('');
+      setNotice(`${target?.email ?? 'The selected administrator'} is now the workspace owner. Both accounts must sign in again.`);
+      await load();
+    } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Ownership could not be transferred.'); }
+    finally { setBusy(false); }
+  }
+
   async function updateRole(event: FormEvent<HTMLFormElement>, role: Role) {
     event.preventDefault(); setBusy(true); setError(''); setNotice('');
     const values = new FormData(event.currentTarget);
@@ -269,6 +299,7 @@ export default function AccessPage() {
             return <label key={key} className="permission-check"><input type="checkbox" checked={checked} disabled={!canAssignRoles} onChange={(event) => setSelectedPermissionKeys((current) => event.target.checked ? [...current, key] : current.filter((entry) => entry !== key))} /><span><strong>{enumLabel(key)}</strong><small>{permission?.description ?? key}{permission?.sensitive ? ' · approval-sensitive' : ''}</small></span></label>;
           })}</fieldset>)}</div>}
           {canAssignRoles && <div className="access-save-row"><span className="muted">{selectedPermissionKeys.length} permission grants</span><button className="button button-primary" onClick={() => void saveRolePermissions()} disabled={busy}>Save permissions</button></div>}
+          {selectedRole && canAssignRoles && canManageTenantRoles && canReadOrganizationUnits && organizationUnits.length > 0 && !selectedRole.key.endsWith('OWNER') && !selectedRole.key.endsWith('TENANT_ADMIN') && <div className="user-scope-editor"><label>Group scope <span className="muted">(optional)</span><select aria-label={`Group scope for ${selectedRole.name}`} multiple value={selectedScopeUnitIds} onChange={(event) => setSelectedScopeUnitIds([...event.currentTarget.selectedOptions].map((option) => option.value))} size={Math.min(Math.max(organizationUnits.length, 2), 5)}>{organizationUnits.map((unit) => <option key={unit.id} value={unit.id}>{unit.name} · {unit.unitType}</option>)}</select><small>Limit this role to specific groups. It can then only be assigned to members of those groups.</small></label><button className="button button-secondary button-small" disabled={busy} onClick={() => void saveRoleScope(selectedRole)}>Save group scope</button></div>}
           {selectedRole && canAssignRoles && canManageTenantRoles && !selectedRole.isSystem && <details className="platform-user-edit"><summary>Edit role details</summary><form className="platform-form" onSubmit={(event) => void updateRole(event, selectedRole)}><label>Role name<input name="name" required maxLength={120} defaultValue={selectedRole.name} /></label><label>Description<input name="description" maxLength={500} defaultValue={selectedRole.description ?? ''} /></label><label className="platform-checkbox-label"><input name="active" type="checkbox" defaultChecked={selectedRole.active} /> Role is active</label><button className="button button-secondary button-small" disabled={busy}>Save role details</button></form></details>}
           {canAssignRoles && canManageTenantRoles && <details className="platform-user-edit"><summary>Create a custom role</summary><form className="platform-form" onSubmit={(event) => void createRole(event)}><label>Role key<input name="key" required minLength={2} maxLength={80} pattern="[A-Za-z][A-Za-z0-9_]*" placeholder="BRANCH_COORDINATOR" /></label><label>Role name<input name="name" required maxLength={120} /></label><label>Description<input name="description" maxLength={500} /></label><button className="button button-secondary button-small" disabled={busy}>Create role</button></form><small>New custom roles start with no permissions. Grant only the access they need above.</small></details>}
         </> : <div className="empty-state"><span className="empty-icon"><ShieldCheck /></span><h2>No tenant roles</h2><p>Default roles are created when the organization is provisioned.</p></div>}
@@ -303,10 +334,19 @@ export default function AccessPage() {
           </>}
         </section>}
 
+        {isOwner && canReadUsers && <section className="surface-panel ownership-panel">
+          <div className="section-heading section-heading-panel"><div><h2>Workspace ownership</h2><p>One accountable owner holds refund and adjustment approval. Transferring ownership revokes both sign-in sessions.</p></div><ShieldCheck size={18} /></div>
+          <form className="access-user-form" onSubmit={transferOwnership}>
+            <label className="wide-field">New owner<select required value={transferTargetId} onChange={(event) => setTransferTargetId(event.target.value)}><option value="">Choose an active administrator</option>{users.filter((row) => row.status === 'ACTIVE' && row.emailVerifiedAt && row.id !== user?.id && row.userRoles.some(({ role }) => role.key === 'TENANT_ADMIN' || role.key === 'TENANT_OWNER')).map((row) => <option key={row.id} value={row.id}>{row.firstName} {row.lastName ?? ''} · {row.email}</option>)}</select><small>Promote a member to workspace administrator first if they are not listed.</small></label>
+            <label className="wide-field">Your current password<input type="password" required autoComplete="current-password" value={transferPassword} onChange={(event) => setTransferPassword(event.target.value)} /></label>
+            <button className="button button-primary wide-field" disabled={busy || !transferTargetId}>Transfer ownership</button>
+          </form>
+        </section>}
+
         {canReadUsers && <section className="surface-panel user-directory-panel">
           <div className="section-heading section-heading-panel"><div><h2>User directory</h2><p>{users.length} of the organization’s recent accounts</p></div><UsersRound size={18} /></div>
           {users.length ? <div className="table-wrap"><table><thead><tr><th>User</th><th>Status</th><th>Roles</th><th>Organization scope</th><th>Last sign-in</th><th>Actions</th></tr></thead><tbody>{users.map((row) => <tr key={row.id}>
-            <td><strong>{row.firstName} {row.lastName ?? ''}</strong><small className="table-subtext">{row.email}{row.status === 'INVITED' && row.invitationExpiresAt ? ` · link expires ${formatIndianDate(new Date(row.invitationExpiresAt))}` : row.mustChangePassword ? ' · password change required' : ''}</small>
+            <td><strong>{row.firstName} {row.lastName ?? ''}</strong>{row.userRoles.some(({ role }) => role.key === 'TENANT_OWNER') && <span className="status-pill status-green owner-pill">Owner</span>}<small className="table-subtext">{row.email}{row.status === 'INVITED' && row.invitationExpiresAt ? ` · link expires ${formatIndianDate(new Date(row.invitationExpiresAt))}` : row.mustChangePassword ? ' · password change required' : ''}</small>
               {canCreateUsers && <details className="platform-user-edit"><summary>Edit profile</summary><form className="platform-form" onSubmit={(event) => void saveUserProfile(event, row.id)}><label>First name<input name="firstName" required maxLength={120} defaultValue={row.firstName} /></label><label>Last name<input name="lastName" maxLength={120} defaultValue={row.lastName ?? ''} /></label><label>Phone<input name="phone" maxLength={32} defaultValue={row.phone ?? ''} /></label><small>Email changes are verified from the user’s own profile.</small><button className="button button-secondary button-small" disabled={busy}>Save profile</button></form></details>}
             </td>
             <td><span className={`status-pill ${row.status === 'ACTIVE' ? 'status-green' : row.status === 'INVITED' ? 'status-amber' : 'status-gray'}`}>{row.status === 'INVITED' ? 'Invitation pending' : enumLabel(row.status)}</span></td>

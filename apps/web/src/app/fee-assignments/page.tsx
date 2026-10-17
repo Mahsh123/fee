@@ -1,5 +1,5 @@
 'use client';
-import { formatIndianDate } from '../../lib/locale';
+import { formatIndianCurrency, formatIndianDate } from '../../lib/locale';
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ASSIGNMENT_TARGET_TYPES, enumLabel, PERMISSIONS } from '@fee/types';
@@ -46,7 +46,7 @@ export default function FeeAssignmentsPage() {
     try { const [assignmentPage, structurePage, branchPage, unitPage, groupPage, yearPage, peopleGroupList] = await Promise.all([
       apiRequest<Page<Assignment>>('/fee-assignments?pageSize=100'),
       apiRequest<Page<Structure>>('/fee-structures?pageSize=100'),
-      apiRequest<Page<Branch>>('/organization/branches?pageSize=200'),
+      apiRequest<Page<Branch>>('/branches?pageSize=200'),
       canReadStudents ? apiRequest<Page<Unit>>('/academic-units?pageSize=200').catch(() => ({ items: [] as Unit[] })) : Promise.resolve({ items: [] as Unit[] }),
       canReadStudents ? apiRequest<Page<StudentGroup>>('/student-groups?pageSize=200').catch(() => ({ items: [] as StudentGroup[] })) : Promise.resolve({ items: [] as StudentGroup[] }),
       canReadStudents ? apiRequest<Page<AcademicYear>>('/academic-years?pageSize=200&sort=-startDate').catch(() => ({ items: [] as AcademicYear[] })) : Promise.resolve({ items: [] as AcademicYear[] }),
@@ -168,7 +168,7 @@ export default function FeeAssignmentsPage() {
     <div className="page-heading"><div><p className="eyebrow">FEE OPERATIONS</p><h1>Assignments</h1><p className="muted">Assign a published fee schedule to a branch, a configured group, or selected organisation members.</p></div><span className="heading-count"><UsersRound size={16} /> {assignments.length} assignments</span></div>
     {notice && <div className="notice notice-success" role="status">{notice}</div>}{error && <div className="notice notice-error" role="alert">{error}</div>}
     <section className="surface-panel assignment-create-panel"><div className="section-heading section-heading-panel"><div><h2>New assignment</h2><p>Only published fee structure versions can be assigned to one selected branch.</p></div></div><form className="assignment-form" onSubmit={create}>
-      <label>Branch<select name="branchId" required value={branchId} onChange={(event) => { setBranchId(event.target.value); setSelectedStudents([]); }}><option value="">Choose a branch</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name} · {branch.code}</option>)}</select></label>
+      <label>Branch<select name="branchId" required value={branchId} onChange={(event) => { setBranchId(event.target.value); setSelectedStudents([]); setSelectedPeople([]); setStudentSearch(''); setPersonSearch(''); }}><option value="">Choose a branch</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name} · {branch.code}</option>)}</select></label>
       <label>Fee structure<select name="structureId" value={structureId} onChange={(e) => setStructureId(e.target.value)} required><option value="">Choose a schedule</option>{structures.map((row) => <option key={row.id} value={row.id}>{row.name} ({row.code})</option>)}</select></label>
       <label>Published version<select name="versionId" required disabled={!structure}><option value="">Choose version</option>{structure?.versions.filter((v) => v.status === 'ACTIVE').map((v) => <option key={v.id} value={v.id}>Version {v.version} · from {formatIndianDate(new Date(v.effectiveFrom))}</option>)}</select></label>
       <label>Assign to<select name="targetType" value={targetType} onChange={(event) => { setTargetType(event.target.value); setSelectedStudents([]); setStudentSearch(''); setSelectedPeople([]); setPersonSearch(''); setPersonGroupMode(false); }} required>{assignmentTargetTypes.map((type) => <option key={type} value={type}>{type === 'STUDENT' ? 'Education students' : type === 'PERSON' ? 'Organisation people' : type === 'CUSTOM_GROUP' ? 'Education student group' : enumLabel(type)}</option>)}</select></label>
@@ -218,7 +218,7 @@ export default function FeeAssignmentsPage() {
           <label>Period ends<input type="date" value={periodEnd} onChange={(event) => setPeriodEnd(event.target.value)} required /></label>
           <label>Payment due date<input type="date" value={cycleDueDate} onChange={(event) => setCycleDueDate(event.target.value)} required /></label>
         </div>
-        {cycleInputs.items.filter((item) => item.frequency === cycleFrequency).map((item) => <div className="notice" key={item.id}><strong>{item.name}</strong> · {enumLabel(item.calculationMethod)} · ₹{Number(item.amount).toLocaleString('en-IN')} {item.quantityRequired ? 'per entered unit' : 'configured charge'}</div>)}
+        {cycleInputs.items.filter((item) => item.frequency === cycleFrequency).map((item) => <div className="notice" key={item.id}><strong>{item.name}</strong> · {enumLabel(item.calculationMethod)} · {formatIndianCurrency(item.amount)} {item.quantityRequired ? 'per entered unit' : 'configured charge'}</div>)}
         {cycleInputs.items.some((item) => item.frequency === cycleFrequency && item.quantityRequired) && <div className="table-wrap"><table><thead><tr><th>Person</th>{cycleInputs.items.filter((item) => item.frequency === cycleFrequency && item.quantityRequired).map((item) => <th key={item.id}>{item.name} quantity</th>)}</tr></thead><tbody>{cycleInputs.people.map((person) => <tr key={person.id}><td><strong>{[person.firstName, person.middleName, person.lastName].filter(Boolean).join(' ')}</strong><small className="table-subtext">{person.personNumber}</small></td>{cycleInputs.items.filter((item) => item.frequency === cycleFrequency && item.quantityRequired).map((item) => { const key = `${person.id}:${item.id}`; return <td key={item.id}><input aria-label={`${person.personNumber} ${item.name} quantity`} inputMode="decimal" pattern="[0-9]+(\.[0-9]{1,4})?" value={cycleQuantities[key] ?? ''} onChange={(event) => setCycleQuantities((current) => ({ ...current, [key]: event.target.value }))} required /></td>; })}</tr>)}</tbody></table></div>}
         {cycleInputs.people.length === 0 && <p className="notice notice-error">There are no active people in this assignment.</p>}
         <div className="section-heading section-heading-panel"><div><h3>Previous cycles</h3><p>Completed periods stay available in Fee Demands with their original amounts and quantity inputs.</p></div></div>

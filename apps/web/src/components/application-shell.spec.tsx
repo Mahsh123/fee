@@ -105,11 +105,17 @@ describe('application hierarchy navigation', () => {
     const markup = renderToStaticMarkup(createElement(ApplicationShell, null, createElement('main', null, 'Platform content')));
 
     expect(markup).toContain('Platform control plane');
-    expect(markup).toContain('Organisations');
-    expect(markup).toContain('Provision a tenant');
+    // One vocabulary: the tenant record is a workspace everywhere in the console.
+    expect(markup).toContain('Workspaces');
+    expect(markup).toContain('Provision a workspace');
     expect(markup).toContain('Platform admins');
+    expect(markup).toContain('Platform audit');
     expect(markup).toContain('href="/platform/tenants"');
     expect(markup).toContain('href="/platform/provision"');
+    expect(markup).toContain('href="/platform/audit"');
+    expect(markup).not.toContain('Organisations');
+    // Tenant audit logs stay tenant-scoped; the platform has its own trail.
+    expect(markup).not.toContain('href="/audit-logs"');
     expect(markup).not.toContain('Students');
     expect(markup).not.toContain('Fee demands');
   });

@@ -186,7 +186,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
             const _UnavailableCard(
               title: 'Attendance marking',
               message:
-                  'The Wasl API has no attendance records or marking endpoint yet. Attendance actions are not available here.',
+                  'Attendance is marked from the workspace Attendance screen until mobile marking ships. Roster, sessions, and records are already recorded by the API.',
               icon: Icons.event_busy_outlined,
             ),
             const SizedBox(height: 24),
@@ -627,7 +627,7 @@ class _StaffStudentScreenState extends State<StaffStudentScreen> {
                 const _UnavailableCard(
                   title: 'Attendance',
                   message:
-                      'Attendance records and attendance editing are not present in the current Wasl API.',
+                      'Mark and review attendance in the workspace Attendance screen. Mobile marking is not part of this app build yet.',
                   icon: Icons.event_busy_outlined,
                 ),
               ],

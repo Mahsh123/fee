@@ -2,6 +2,7 @@
 import { formatIndianCurrency, formatIndianDate } from '../../lib/locale';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { parseDecimalToUnits, unitsToDecimalString } from '@fee/money';
 import { ApiError, apiRequest, type SessionUser } from '../../lib/api';
 import { useSession } from '../../components/session-provider';
 import { FileText, Printer, ReceiptText } from 'lucide-react';
@@ -77,7 +78,10 @@ export default function InvoicesPage() {
 }
 
 function hasPermission(user: SessionUser | null, permission: string): boolean { return Boolean(user?.isPlatformAdmin || user?.permissions.includes(permission)); }
-function exactDifference(total: string, paid: string): string { const difference = decimalUnits(total) - decimalUnits(paid); const negative = difference < 0n; const absolute = negative ? -difference : difference; return `${negative ? '-' : ''}${absolute / 10_000n}.${(absolute % 10_000n).toString().padStart(4, '0')}`; }
-function addDecimal(left: string, right: string): string { const total = decimalUnits(left) + decimalUnits(right); const negative = total < 0n; const absolute = negative ? -total : total; return `${negative ? '-' : ''}${absolute / 10_000n}.${(absolute % 10_000n).toString().padStart(4, '0')}`; }
-function decimalUnits(value: string): bigint { const [whole = '0', fraction = ''] = value.split('.'); return BigInt(`${whole}${fraction.padEnd(4, '0')}`); }
+function exactDifference(total: string, paid: string): string {
+  return unitsToDecimalString(parseDecimalToUnits(total) - parseDecimalToUnits(paid), 4, 4);
+}
+function addDecimal(left: string, right: string): string {
+  return unitsToDecimalString(parseDecimalToUnits(left) + parseDecimalToUnits(right), 4, 4);
+}
 function enumKind(value: string): string { return value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase()); }

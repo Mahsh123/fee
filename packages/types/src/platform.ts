@@ -125,6 +125,7 @@ export const SYSTEM_ROLE_NAMES: Record<RoleKey, string> = {
   TENANT_OWNER: 'Workspace owner',
   TENANT_ADMIN: 'Workspace administrator',
   TENANT_MEMBER: 'Workspace member',
+  BRANCH_MANAGER: 'Branch manager',
   FINANCE_ADMIN: 'Finance administrator',
   FINANCE_STAFF: 'Finance staff',
   ADMISSION_STAFF: 'Admissions staff',

@@ -340,6 +340,32 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
 
   TENANT_MEMBER: [PERMISSIONS.DASHBOARD_READ],
 
+  /**
+   * A preset for branch-level administration: everything a front desk needs,
+   * nothing that changes organization-wide configuration or grants access.
+   * Pair it with branch memberships; role scope can narrow it to groups too.
+   */
+  BRANCH_MANAGER: [
+    PERMISSIONS.DASHBOARD_READ,
+    PERMISSIONS.USER_READ,
+    PERMISSIONS.STUDENT_READ,
+    PERMISSIONS.STUDENT_UPDATE,
+    PERMISSIONS.GUARDIAN_READ,
+    PERMISSIONS.FEE_CATALOG_READ,
+    PERMISSIONS.FEE_STRUCTURE_READ,
+    PERMISSIONS.FEE_ASSIGNMENT_READ,
+    PERMISSIONS.FEE_DEMAND_READ,
+    PERMISSIONS.PAYMENT_READ,
+    PERMISSIONS.PAYMENT_COLLECT,
+    PERMISSIONS.RECEIPT_READ,
+    PERMISSIONS.ATTENDANCE_READ,
+    PERMISSIONS.ATTENDANCE_MARK,
+    PERMISSIONS.ATTENDANCE_CORRECT,
+    PERMISSIONS.REPORT_READ,
+    PERMISSIONS.ORGANIZATION_UNIT_READ,
+    PERMISSIONS.BRANCH_READ,
+  ],
+
   FINANCE_ADMIN: [
     PERMISSIONS.TENANT_SETTINGS_READ,
     PERMISSIONS.TENANT_SETTINGS_UPDATE,
@@ -568,4 +594,53 @@ export function permissionsForRoles(roles: readonly RoleKey[]): string[] {
 
 export function roleHasPermission(role: RoleKey, permission: PermissionKey): boolean {
   return (DEFAULT_ROLE_PERMISSIONS[role] ?? []).includes(permission);
+}
+
+/**
+ * Permissions that only the workspace owner may hold or grant.
+ *
+ * A tenant administrator collects and reconciles money; approving a refund or
+ * an operational adjustment is a control that must stay with the accountable
+ * owner. These are checked on top of the editable catalogue, because a role
+ * permission editor that can grant itself these keys turns the separation of
+ * duties into a formality.
+ */
+export const OWNER_ONLY_PERMISSIONS = [
+  PERMISSIONS.PAYMENT_REFUND_APPROVE,
+  PERMISSIONS.ADJUSTMENT_APPROVE,
+] as const;
+
+export type OwnerOnlyPermission = (typeof OWNER_ONLY_PERMISSIONS)[number];
+
+export function isOwnerOnlyPermission(key: string): boolean {
+  return (OWNER_ONLY_PERMISSIONS as readonly string[]).includes(key);
+}
+
+/**
+ * Platform control-plane tiers. The reserved platform workspace is not a
+ * customer tenant, so its operators are ranked here rather than in tenant RBAC.
+ * `OWNER` may change plans and operator accounts, `BILLING` may invoice and
+ * reconcile, `SUPPORT` may read and revoke sessions but not change money.
+ */
+export const PLATFORM_OPERATOR_ROLES = ['OWNER', 'BILLING', 'SUPPORT'] as const;
+export type PlatformOperatorRole = (typeof PLATFORM_OPERATOR_ROLES)[number];
+
+export const PLATFORM_OPERATOR_PERMISSIONS: Record<PlatformOperatorRole, readonly string[]> = {
+  OWNER: ['*'],
+  BILLING: [
+    'platform.tenant.read', 'platform.plan.read',
+    'platform.billing.read', 'platform.billing.write', 'platform.refund.write',
+    'platform.tenant.update',
+  ],
+  SUPPORT: [
+    'platform.tenant.read', 'platform.plan.read', 'platform.billing.read',
+    'platform.user.read', 'platform.session.revoke', 'platform.audit.read',
+  ],
+};
+
+export function platformOperatorHasPermission(role: string | null | undefined, permission: string): boolean {
+  if (!role) return false;
+  const granted = PLATFORM_OPERATOR_PERMISSIONS[role as PlatformOperatorRole];
+  if (!granted) return false;
+  return granted.includes('*') || granted.includes(permission);
 }

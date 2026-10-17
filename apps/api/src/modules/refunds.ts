@@ -113,6 +113,9 @@ export class RefundsService {
       const refund = await tx.refund.findFirst({ where: { tenantId, id } });
       if (!refund) throw AppError.notFound('Refund');
       if (refund.status !== 'PENDING_APPROVAL' || !refund.approvalRequestId) throw AppError.conflict('REFUND_NOT_PENDING_APPROVAL', 'This refund is not awaiting approval.');
+      if (input.approved && refund.requestedBy && refund.requestedBy === actorId && !this.tenantContext.require().isPlatformAdmin) {
+        throw AppError.conflict('SELF_APPROVAL_FORBIDDEN', 'A refund must be approved by someone other than the person who requested it.');
+      }
       const approval = await tx.approvalRequest.findFirst({ where: { tenantId, id: refund.approvalRequestId, actionType: 'REFUND', status: 'PENDING' } });
       if (!approval) throw AppError.conflict('APPROVAL_NOT_PENDING', 'The refund approval request is no longer pending.');
       const changedApproval = await tx.approvalRequest.updateMany({ where: { tenantId, id: approval.id, status: 'PENDING' }, data: { status: input.approved ? 'APPROVED' : 'REJECTED', decidedBy: actorId ?? null, decidedAt: new Date(), decisionNote: input.note ?? null } });

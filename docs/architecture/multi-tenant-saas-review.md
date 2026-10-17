@@ -157,3 +157,59 @@ Operations/payment follow-up (2026-10-07): production Compose now defaults to on
 - [ ] Verify live email delivery and the browser flow on production tenant/platform hostnames; add MFA/recovery and billing/domain/subscription security notification events.
 - [ ] Review database grants/RLS, audit coverage, session revocation, rate limits, backups, restore, incident response, and support access.
 - [ ] Run migration/preflight and tenant-isolation/security integration checks in a disposable Neon branch before production deployment.
+
+## Follow-up: workspace ownership, permission ceilings, operator tiers, and MFA (2026-10-17)
+
+### Audit findings fixed in code
+
+- `TENANT_OWNER` was seeded but never assigned, and every guard treated it as
+  `TENANT_ADMIN`, so the documented owner/administrator hierarchy did not exist.
+- `updateRolePermissions` let any tenant administrator add the two permissions
+  reserved for approval (`payment.refund.approve`, `adjustment.approve`) to their
+  own role, and could grant permissions the actor did not hold.
+- Refunds and adjustments could be approved by the person who requested them.
+- `Role.scopeUnitIds` was stored and documented but referenced nowhere.
+- The platform control plane had one undifferentiated `PLATFORM_ADMIN` boolean,
+  no audit viewer, no MFA, and no session inventory.
+- Suspend/archive used a native `window.confirm`, and non-INR money rendered as
+  `Review currency` instead of the currency's own amount.
+
+### Implemented
+
+- Provisioning now assigns the first account `TENANT_OWNER`; `POST /access/owners/transfer`
+  moves ownership with password re-authentication, revokes both sessions, and is audited.
+  A backfill migration promotes the oldest active administrator per workspace that has no owner.
+- `isTenantAdminRole` boundaries stay, and on top of them: owner accounts can only be
+  changed by the owner or a platform operator; an owner cannot remove their own owner
+  role (transfer is the only path); the last active owner can never be removed.
+- `OWNER_ONLY_PERMISSIONS` plus a grant ceiling: role editors cannot grant approval
+  rights or any permission the actor does not already hold. Refund and adjustment
+  approvals reject the requester (`SELF_APPROVAL_FORBIDDEN`).
+- `Role.scopeUnitIds` is validated on create/update, refuses group scoping for
+  tenant-admin roles, is returned by `GET /access/roles`, is editable in `/access`, and
+  is enforced on assignment: a group-scoped role can only be given to a member of those
+  groups. A seeded `BRANCH_MANAGER` preset (and a migration for existing workspaces)
+  gives branch-level administration without organization-wide configuration.
+- Platform operators are tiered (`OWNER`, `BILLING`, `SUPPORT`) on `User.platformRole`;
+  plan and operator-account changes are owner-only, billing is invoices/refunds, support
+  is read plus session revocation. `GET /platform/audit-logs` and `/platform/audit` show
+  the reserved platform workspace's own hash-chained trail.
+- TOTP MFA (`/auth/me/mfa/enroll|activate|disable`, RFC 6238 verified against the
+  published vectors) is enforced at sign-in once enrolled, with one-use recovery codes.
+  `/auth/me/sessions` lists and revokes the account's own sessions, and platform
+  operators can sign another operator out of every device.
+- Suspend and archive require typing the workspace name. Money is shown per currency.
+
+### Still open
+
+- Enrolment is prompted, not hard-gated, for platform operators: the seeded operator has
+  no enrolment path until it signs in once. Making MFA mandatory before any control-plane
+  write is the next hardening step.
+- Scope enforcement is complete for role assignment and the access directory; enforcing
+  unit scope on every finance route, report, export, and job still needs the same
+  central-predicate treatment branch membership already has.
+- The three new migrations (`20261017000100`–`20261017000300`) are applied to no database
+  in this environment: no disposable target was configured and production was not touched.
+  The owner backfill in particular needs a real run in a disposable Neon branch.
+- Tenant deletion, retention/export, and restore remain unimplemented; archive is still the
+  only lifecycle exit.

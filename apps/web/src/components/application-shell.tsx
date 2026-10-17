@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { PLATFORM_SYSTEM_TENANT_SLUG, PERMISSIONS, organizationCategory } from '@fee/types';
-import { Building2, GraduationCap, LayoutDashboard, LogOut, ReceiptText, Settings2, UsersRound, WalletCards, SlidersHorizontal, RotateCcw, CircleDollarSign, CalendarClock, ShieldCheck, FileText, BarChart3, Scale, BellRing, BadgePercent, GitBranch, UserRound, ClipboardCheck, Menu, X, ChevronDown, ChevronRight, type LucideIcon } from 'lucide-react';
+import { Building2, GraduationCap, LayoutDashboard, LogOut, ReceiptText, Settings2, UsersRound, WalletCards, SlidersHorizontal, RotateCcw, CircleDollarSign, CalendarClock, ShieldCheck, FileText, BarChart3, Scale, BellRing, BadgePercent, GitBranch, UserRound, ClipboardCheck, Menu, X, ChevronDown, ChevronRight, ScrollText, type LucideIcon } from 'lucide-react';
 import { platformSignInHref, signOut, tenantSignInHref } from '../lib/api';
 import { useSession } from './session-provider';
 import { useTenant } from './tenant-provider';
@@ -62,15 +62,15 @@ const moduleNavigation: Record<string, NavigationItem[]> = {
 
 const platformNavigation = [
   { section: 'PLATFORM', href: '/platform', label: 'Overview', icon: LayoutDashboard },
-  { section: 'WORKSPACES', href: '/platform/tenants', label: 'Organisations', icon: Building2 },
-  { section: 'WORKSPACES', href: '/platform/provision', label: 'Provision a tenant', icon: GitBranch },
+  { section: 'WORKSPACES', href: '/platform/tenants', label: 'Workspaces', icon: Building2 },
+  { section: 'WORKSPACES', href: '/platform/provision', label: 'Provision a workspace', icon: GitBranch },
   { section: 'COMMERCIAL', href: '/platform/plans', label: 'Plans and billing', icon: CircleDollarSign },
   { section: 'PLATFORM ACCESS', href: '/platform/admins', label: 'Platform admins', icon: UsersRound },
-  { section: 'PLATFORM ACCESS', href: '/audit-logs', label: 'Audit logs', icon: ShieldCheck },
+  { section: 'PLATFORM ACCESS', href: '/platform/audit', label: 'Platform audit', icon: ScrollText },
   { section: 'ACCOUNT', href: '/profile', label: 'My profile', icon: UserRound },
 ];
 
-const platformRoutes = ['/platform', '/platform/tenants', '/platform/provision', '/platform/plans', '/platform/admins', '/audit-logs', '/profile', '/change-password'];
+const platformRoutes = ['/platform', '/platform/tenants', '/platform/provision', '/platform/plans', '/platform/admins', '/platform/audit', '/profile', '/change-password'];
 export function ApplicationShell({ children }: Readonly<{ children: React.ReactNode }>) {
   const { user, loading, update } = useSession();
   const tenant = useTenant();

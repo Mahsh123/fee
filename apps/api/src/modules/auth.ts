@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Injectable,
   Module,
+  Param,
   Patch,
   Post,
   Req,
@@ -23,8 +25,9 @@ import { InMemoryRateLimitStore, LoginRateLimitGuard, ZodValidationPipe } from '
 import { buildAuthenticatedUser, PasswordService, TokenService } from '../common/security';
 import { CurrentUser, PortalRoute, Public, TenantContextModule, TenantContextService } from '../common/tenancy';
 import { DEFAULT_ROLE_PERMISSIONS, PERMISSIONS, type RoleKey } from '@fee/types';
-import { acceptEmailChangeSchema, acceptInvitationSchema, changeOwnEmailSchema, changePasswordSchema, completePasswordResetSchema, loginSchema, publicTenantRegistrationSchema, refreshSchema, requestPasswordResetSchema, updateOwnProfileSchema, type AcceptEmailChangeInput, type AcceptInvitationInput, type ChangeOwnEmailInput, type ChangePasswordInput, type CompletePasswordResetInput, type LoginInput, type PublicTenantRegistrationInput, type RefreshInput, type RequestPasswordResetInput, type UpdateOwnProfileInput } from '@fee/validation';
+import { acceptEmailChangeSchema, acceptInvitationSchema, changeOwnEmailSchema, changePasswordSchema, completePasswordResetSchema, loginSchema, mfaActivateSchema, mfaDisableSchema, publicTenantRegistrationSchema, refreshSchema, requestPasswordResetSchema, updateOwnProfileSchema, type AcceptEmailChangeInput, type AcceptInvitationInput, type ChangeOwnEmailInput, type ChangePasswordInput, type CompletePasswordResetInput, type LoginInput, type MfaActivateInput, type MfaDisableInput, type PublicTenantRegistrationInput, type RefreshInput, type RequestPasswordResetInput, type UpdateOwnProfileInput } from '@fee/validation';
 import { randomUUID } from 'node:crypto';
+import { generateRecoveryCodes, generateTotpSecret, totpOtpauthUrl, verifyTotp } from '../common/totp';
 import type { Response } from 'express';
 import { PLATFORM_SYSTEM_TENANT_SLUG } from '@fee/types';
 import { buildEmailChangeVerificationUrl, buildPasswordResetUrl, buildUserInvitationUrl, enqueuePasswordReset, enqueueUserEmailVerification, enqueueUserInvitation } from '../common/invitations';
@@ -67,6 +70,10 @@ export interface SessionUser {
   studentId: string | null;
   guardianId: string | null;
   mustChangePassword: boolean;
+  /** True when an authenticator is enrolled and a code is required at sign-in. */
+  mfaEnabled: boolean;
+  /** Platform operators are expected to enrol; the client surfaces this as a prompt. */
+  mfaSetupRequired: boolean;
 }
 
 export type OwnProfile = SessionUser & { pendingEmail: string | null; emailVerifiedAt: Date | null };
@@ -98,6 +105,7 @@ interface IssueSessionInput {
   studentId: string | null;
   guardianId: string | null;
   mustChangePassword: boolean;
+  mfaEnabledAt?: Date | null;
 }
 
 @Injectable()
@@ -185,6 +193,17 @@ export class AuthService {
       throw genericFailure;
     }
 
+    // A second factor is checked after the password and before any session is
+    // issued, so a stolen password alone never reaches a token.
+    if (user.mfaEnabledAt && user.mfaSecret) {
+      if (!input.mfaCode) {
+        throw new AppError({ code: 'MFA_REQUIRED', message: 'Enter the 6-digit code from your authenticator app.', status: 401 });
+      }
+      if (!verifyTotp(user.mfaSecret, input.mfaCode)) {
+        throw new AppError({ code: 'MFA_INVALID', message: 'That authenticator code is not valid.', status: 401 });
+      }
+    }
+
     const resolved = await this.resolveAccess(user.id, tenant.id);
     if (user.isPlatformAdmin !== resolved.roles.includes('PLATFORM_ADMIN')) {
       await this.passwords.burnTime();
@@ -207,6 +226,7 @@ export class AuthService {
       studentId: user.studentId,
       guardianId: user.guardianId,
       mustChangePassword: user.mustChangePassword,
+      mfaEnabledAt: user.mfaEnabledAt,
     });
 
     await this.prisma.db.user.update({
@@ -546,6 +566,7 @@ export class AuthService {
           studentId: user.studentId,
           guardianId: user.guardianId,
           mustChangePassword: user.mustChangePassword,
+          mfaEnabledAt: user.mfaEnabledAt,
         },
         tx,
         stored.id,
@@ -630,6 +651,8 @@ export class AuthService {
       roles: resolved.roles,
       permissions: resolved.permissions,
       isPlatformAdmin: user.isPlatformAdmin,
+      mfaEnabled: Boolean(user.mfaEnabledAt),
+      mfaSetupRequired: Boolean(user.isPlatformAdmin && !user.mfaEnabledAt),
       studentId: user.studentId,
       guardianId: user.guardianId,
       mustChangePassword: user.mustChangePassword,
@@ -850,6 +873,78 @@ export class AuthService {
     return { roles, permissions: [...effectivePermissions].sort() };
   }
 
+  /**
+   * Starts authenticator enrolment. The secret is stored immediately but stays
+   * inactive until a code proves the device holds it.
+   */
+  async beginMfaEnrollment(userId: string, tenantId: string) {
+    const secret = generateTotpSecret();
+    const updated = await this.prisma.db.user.updateMany({
+      where: { tenantId, id: userId, deletedAt: null },
+      data: { mfaSecret: secret, mfaEnabledAt: null, mfaRecoveryCodeHashes: [] },
+    });
+    if (updated.count !== 1) throw AppError.notFound('Account');
+    const account = await this.prisma.db.user.findFirst({ where: { tenantId, id: userId }, select: { email: true } });
+    return { secret, otpauthUrl: totpOtpauthUrl('Wasl', account?.email ?? userId, secret) };
+  }
+
+  async activateMfa(userId: string, tenantId: string, input: MfaActivateInput) {
+    const user = await this.prisma.db.user.findFirst({ where: { tenantId, id: userId }, select: { id: true, mfaSecret: true } });
+    if (!user?.mfaSecret) throw AppError.conflict('MFA_NOT_ENROLLED', 'Start authenticator setup before confirming a code.');
+    if (!verifyTotp(user.mfaSecret, input.code)) {
+      throw AppError.validation('That authenticator code is not valid. Check the clock on your device and try again.');
+    }
+    const recoveryCodes = generateRecoveryCodes();
+    return this.prisma.transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { mfaEnabledAt: new Date(), mfaRecoveryCodeHashes: recoveryCodes.map((code) => this.passwords.hashToken(code)), sessionVersion: { increment: 1 } },
+      });
+      await this.audit.record(tx, {
+        tenantId, actorId: userId, action: 'auth.mfa.enabled', entityType: 'User', entityId: userId,
+        after: { recoveryCodeCount: recoveryCodes.length },
+      });
+      return { recoveryCodes };
+    });
+  }
+
+  async disableMfa(userId: string, tenantId: string, input: MfaDisableInput) {
+    const user = await this.prisma.db.user.findFirst({ where: { tenantId, id: userId }, select: { passwordHash: true, mfaEnabledAt: true } });
+    if (!user) throw AppError.notFound('Account');
+    if (!(await this.passwords.verify(input.password, user.passwordHash))) {
+      throw AppError.forbidden('Enter your current password to turn off two-factor sign-in.');
+    }
+    return this.prisma.transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { mfaSecret: null, mfaEnabledAt: null, mfaRecoveryCodeHashes: [], sessionVersion: { increment: 1 } },
+      });
+      await this.audit.record(tx, {
+        tenantId, actorId: userId, action: 'auth.mfa.disabled', entityType: 'User', entityId: userId,
+        before: { mfaEnabledAt: user.mfaEnabledAt?.toISOString() ?? null },
+      });
+      return { disabled: true };
+    });
+  }
+
+  /** Session inventory for the signed-in account. Token hashes are never returned. */
+  async listSessions(userId: string, tenantId: string) {
+    return this.prisma.db.refreshToken.findMany({
+      where: { tenantId, userId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: { id: true, userAgent: true, ipAddress: true, createdAt: true, expiresAt: true, revokedAt: true },
+    });
+  }
+
+  async revokeSession(userId: string, tenantId: string, sessionId: string) {
+    const result = await this.prisma.db.refreshToken.updateMany({
+      where: { tenantId, userId, id: sessionId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return { revoked: result.count === 1 };
+  }
+
   private async issueSession(
     input: IssueSessionInput,
     existingTx?: TransactionHandle,
@@ -901,6 +996,8 @@ export class AuthService {
       studentId: input.studentId,
       guardianId: input.guardianId,
       mustChangePassword: input.mustChangePassword,
+      mfaEnabled: Boolean(input.mfaEnabledAt),
+      mfaSetupRequired: Boolean(input.isPlatformAdmin && !input.mfaEnabledAt),
     };
 
     return { accessToken, refreshToken, expiresIn: this.config.jwtAccessTtlSeconds, user };
@@ -1029,6 +1126,28 @@ export class AuthController {
   updateOwnProfile(@CurrentUser() user: { id: string; tenantId: string }, @Body() body: UpdateOwnProfileInput, @Req() request: RequestWithContext) {
     return this.auth.updateOwnProfile(user.id, user.tenantId, body, authRequestContext(request));
   }
+
+  @Post('me/mfa/enroll')
+  @ApiOperation({ summary: 'Start authenticator enrolment for the signed-in account' })
+  beginMfaEnrollment(@CurrentUser() user: { id: string; tenantId: string }) { return this.auth.beginMfaEnrollment(user.id, user.tenantId); }
+
+  @Post('me/mfa/activate')
+  @UsePipes(new ZodValidationPipe(mfaActivateSchema))
+  @ApiOperation({ summary: 'Confirm authenticator enrolment and receive one-use recovery codes' })
+  activateMfa(@CurrentUser() user: { id: string; tenantId: string }, @Body() body: MfaActivateInput) { return this.auth.activateMfa(user.id, user.tenantId, body); }
+
+  @Post('me/mfa/disable')
+  @UsePipes(new ZodValidationPipe(mfaDisableSchema))
+  @ApiOperation({ summary: 'Turn off two-factor sign-in after re-entering the password' })
+  disableMfa(@CurrentUser() user: { id: string; tenantId: string }, @Body() body: MfaDisableInput) { return this.auth.disableMfa(user.id, user.tenantId, body); }
+
+  @Get('me/sessions')
+  @ApiOperation({ summary: 'List the signed-in account’s active and past sessions' })
+  listSessions(@CurrentUser() user: { id: string; tenantId: string }) { return this.auth.listSessions(user.id, user.tenantId); }
+
+  @Delete('me/sessions/:id')
+  @ApiOperation({ summary: 'Revoke one of the signed-in account’s own sessions' })
+  revokeSession(@CurrentUser() user: { id: string; tenantId: string }, @Param('id') id: string) { return this.auth.revokeSession(user.id, user.tenantId, id); }
 
   @Post('me/email-change')
   @UsePipes(new ZodValidationPipe(changeOwnEmailSchema))

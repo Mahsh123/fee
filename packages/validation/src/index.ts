@@ -4,6 +4,16 @@ import { z } from 'zod';
 export const loginSchema = z.object({
   email: z.string().email('A valid email address is required.'),
   password: z.string().min(1, 'The password is required.').max(200),
+  /** Required only when the account has an authenticator enrolled. */
+  mfaCode: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code from your authenticator app.').optional(),
+});
+
+export const mfaActivateSchema = z.object({
+  code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code from your authenticator app.'),
+});
+
+export const mfaDisableSchema = z.object({
+  password: z.string().min(1, 'Enter your current password.').max(200),
 });
 
 export const refreshSchema = z.object({
@@ -16,6 +26,8 @@ export const changePasswordSchema = z.object({
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
+export type MfaActivateInput = z.infer<typeof mfaActivateSchema>;
+export type MfaDisableInput = z.infer<typeof mfaDisableSchema>;
 export type RefreshInput = z.infer<typeof refreshSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 

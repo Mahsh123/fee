@@ -56,7 +56,7 @@ export default function StudentProfilePage() {
     try {
       const base = await apiRequest<Student>(`/students/${studentId}`);
       setStudent(base);
-      const branchResult = await apiRequest<Page<Branch>>('/organization/branches?pageSize=200').catch(() => null);
+      const branchResult = await apiRequest<Page<Branch>>('/branches?pageSize=200').catch(() => null);
       setBranches(branchResult?.items ?? []);
       const optional: Array<Promise<unknown>> = [
         apiRequest<CustomAttribute[]>(`/students/${studentId}/custom-attributes`),

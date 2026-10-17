@@ -4,7 +4,7 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { resolveTxt } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { domainToASCII } from 'node:url';
-import { accessTierForRoles, CORE_TENANT_MODULES, DEFAULT_ROLE_PERMISSIONS, MANUAL_PAYMENT_METHODS, missingTenantModuleDependencies, PERMISSIONS, PLATFORM_MODULES, PLATFORM_SYSTEM_TENANT_SLUG, ROLE_KEYS, SYSTEM_LEDGER_ACCOUNTS, SYSTEM_ROLE_NAMES, enumLabel, type RoleKey } from '@fee/types';
+import { accessTierForRoles, CORE_TENANT_MODULES, DEFAULT_ROLE_PERMISSIONS, MANUAL_PAYMENT_METHODS, missingTenantModuleDependencies, PERMISSIONS, PLATFORM_MODULES, PLATFORM_SYSTEM_TENANT_SLUG, platformOperatorHasPermission, ROLE_KEYS, SYSTEM_LEDGER_ACCOUNTS, SYSTEM_ROLE_NAMES, enumLabel, type RoleKey } from '@fee/types';
 import { isUniqueViolation, Prisma, type SubscriptionStatus, type TenantStatus, type TransactionClient } from '@fee/database';
 import {
   assignUserRolesSchema,
@@ -16,6 +16,7 @@ import {
   tenantSlugAvailabilitySchema,
   resetTenantUserPasswordSchema,
   updatePlatformAdminProfileSchema,
+  updatePlatformAdminRoleSchema,
   updateTenantProfileSchema,
   updateTenantStatusSchema,
   updateTenantEntitlementSchema,
@@ -41,6 +42,7 @@ import {
   type CreateTenantUserInput,
   type ProvisionTenantInput,
   type UpdatePlatformAdminProfileInput,
+  type UpdatePlatformAdminRoleInput,
   type UpdateTenantProfileInput,
   type UpdateTenantUserProfileInput,
   type UpdateTenantUserStatusInput,
@@ -224,7 +226,7 @@ export class PlatformService {
   }
 
   async createPlan(input: CreatePlanInput) {
-    const actor = this.requirePlatformAdmin();
+    const actor = await this.requirePlatformPermission('platform.plan.write');
     try {
       return await this.prisma.transactionWithRetry(async (tx) => {
         const created = await tx.plan.create({
@@ -252,7 +254,7 @@ export class PlatformService {
   }
 
   async updatePlan(id: string, input: UpdatePlanInput) {
-    const actor = this.requirePlatformAdmin();
+    const actor = await this.requirePlatformPermission('platform.plan.write');
     return this.prisma.transactionWithRetry(async (tx) => {
       const current = await tx.plan.findUnique({ where: { id }, include: { modules: true, entitlements: true } });
       if (!current) throw AppError.notFound('Plan');
@@ -456,7 +458,7 @@ export class PlatformService {
   }
 
   async recordPlatformPayment(invoiceId: string, input: RecordPlatformPaymentInput) {
-    const actor = this.requirePlatformAdmin();
+    const actor = await this.requirePlatformPermission('platform.billing.write');
     return this.prisma.transactionWithRetry(async (tx) => {
       const invoice = await tx.platformInvoice.findFirst({
         where: { id: invoiceId, tenant: { slug: { not: PLATFORM_SYSTEM_TENANT_SLUG } } },
@@ -511,7 +513,7 @@ export class PlatformService {
   }
 
   async updatePlatformRefundStatus(refundId: string, input: UpdatePlatformRefundStatusInput) {
-    const actor = this.requirePlatformAdmin();
+    const actor = await this.requirePlatformPermission('platform.refund.write');
     return this.prisma.transactionWithRetry(async (tx) => {
       const refund = await tx.platformRefund.findFirst({ where: { id: refundId, tenant: { slug: { not: PLATFORM_SYSTEM_TENANT_SLUG } } } });
       if (!refund) throw AppError.notFound('Platform refund');
@@ -947,12 +949,18 @@ export class PlatformService {
   async createTenantAdmin(tenantId: string, input: CreateTenantAdminInput) {
     const actor = this.requirePlatformAdmin();
     await this.assertManagedTenant(tenantId);
+    const roleKey = input.ownership === 'OWNER' ? 'TENANT_OWNER' : 'TENANT_ADMIN';
+    if (roleKey === 'TENANT_OWNER') {
+      const existingOwner = await this.prisma.db.userRole.findFirst({ where: { tenantId, role: { key: 'TENANT_OWNER' } }, select: { id: true } });
+      if (existingOwner) throw AppError.conflict('TENANT_OWNER_EXISTS', 'This workspace already has an owner. Transfer ownership instead of creating a second one.');
+    }
     const created = await this.withPlatformTenantScope(actor, tenantId, async () => {
-      const role = await this.prisma.db.role.findFirst({ where: { tenantId, key: 'TENANT_ADMIN' }, select: { id: true } });
-      if (!role) throw AppError.conflict('TENANT_ADMIN_ROLE_NOT_READY', 'This workspace does not have its tenant administrator role.');
-      return this.access.createUser(tenantId, { ...input, roleIds: [role.id] }, this.platformMutationAudit(actor, tenantId, 'platform.tenant_admin.created', 'User', input.email, { email: input.email, role: 'TENANT_ADMIN' }));
+      const role = await this.prisma.db.role.findFirst({ where: { tenantId, key: roleKey }, select: { id: true, name: true } });
+      if (!role) throw AppError.conflict('TENANT_ADMIN_ROLE_NOT_READY', 'This workspace does not have its administrator role.');
+      return this.access.createUser(tenantId, { ...input, roleIds: [role.id] }, this.platformMutationAudit(actor, tenantId,
+        roleKey === 'TENANT_OWNER' ? 'platform.tenant_owner.created' : 'platform.tenant_admin.created', 'User', input.email, { email: input.email, role: roleKey }));
     });
-    return { ...created, roles: [{ id: created.roles[0]?.id, key: 'TENANT_ADMIN', name: 'Tenant administrator' }] };
+    return { ...created, roles: [{ id: created.roles[0]?.id, key: roleKey, name: roleKey === 'TENANT_OWNER' ? 'Workspace owner' : 'Workspace administrator' }] };
   }
 
   async resendTenantUserInvitation(tenantId: string, userId: string) {
@@ -1038,7 +1046,7 @@ export class PlatformService {
     const [items, total] = await Promise.all([
       this.prisma.db.user.findMany({
         where,
-        select: { id: true, email: true, firstName: true, lastName: true, status: true, mustChangePassword: true, lastLoginAt: true, createdAt: true, invitationExpiresAt: true, emailVerifiedAt: true },
+        select: { id: true, email: true, firstName: true, lastName: true, status: true, mustChangePassword: true, lastLoginAt: true, createdAt: true, invitationExpiresAt: true, emailVerifiedAt: true, platformRole: true },
         orderBy: toPrismaOrderBy(query.sort) as never,
         skip: query.skip,
         take: query.take,
@@ -1049,7 +1057,7 @@ export class PlatformService {
   }
 
   async createSuperAdmin(input: CreatePlatformAdminInput) {
-    const actor = this.requirePlatformAdmin();
+    const actor = await this.requirePlatformPermission('platform.operator.write');
     const token = this.passwords.generateToken();
     const tokenHash = this.passwords.hashToken(token);
     const invitationExpiresAt = new Date(Date.now() + 48 * 60 * 60 * 1_000);
@@ -1068,12 +1076,13 @@ export class PlatformService {
             passwordHash,
             status: 'INVITED',
             isPlatformAdmin: true,
+            platformRole: input.operatorRole ?? 'SUPPORT',
             mustChangePassword: true,
             invitationTokenHash: tokenHash,
             invitationExpiresAt,
             createdBy: actor.userId,
           },
-          select: { id: true, email: true, firstName: true, lastName: true, status: true, mustChangePassword: true, createdAt: true, invitationExpiresAt: true },
+          select: { id: true, email: true, firstName: true, lastName: true, status: true, mustChangePassword: true, createdAt: true, invitationExpiresAt: true, platformRole: true },
         });
         await tx.userRole.create({ data: { tenantId: actor.tenantId, userId: user.id, roleId: role.id, grantedBy: actor.userId } });
         await enqueueUserInvitation(tx, { tenantId: actor.tenantId, userId: user.id, email: user.email, firstName: user.firstName, acceptUrl, tokenHash });
@@ -1144,7 +1153,7 @@ export class PlatformService {
   }
 
   async updateSuperAdminStatus(userId: string, input: UpdateTenantUserStatusInput) {
-    const actor = this.requirePlatformAdmin();
+    const actor = await this.requirePlatformPermission('platform.operator.write');
     return this.prisma.transactionWithRetry(async (tx) => {
       const current = await tx.user.findFirst({ where: { tenantId: actor.tenantId, id: userId, isPlatformAdmin: true, deletedAt: null } });
       if (!current) throw AppError.notFound('Super administrator');
@@ -1167,8 +1176,43 @@ export class PlatformService {
     });
   }
 
+  /** Support-tier operators can end platform sessions without touching money or plans. */
+  async revokeSuperAdminSessions(userId: string) {
+    const actor = await this.requirePlatformPermission('platform.session.revoke');
+    const result = await this.prisma.db.refreshToken.updateMany({
+      where: { tenantId: actor.tenantId, userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    await this.prisma.transaction(async (tx) => {
+      await this.audit.record(tx, {
+        tenantId: actor.tenantId, actorId: actor.userId, action: 'platform.super_admin.sessions_revoked', entityType: 'User', entityId: userId,
+        after: { revokedSessions: result.count },
+      });
+    });
+    return { revokedSessions: result.count };
+  }
+
+  async updateSuperAdminRole(userId: string, input: UpdatePlatformAdminRoleInput) {
+    const actor = await this.requirePlatformPermission('platform.operator.write');
+    return this.prisma.transactionWithRetry(async (tx) => {
+      const current = await tx.user.findFirst({ where: { tenantId: actor.tenantId, id: userId, isPlatformAdmin: true, deletedAt: null }, select: { id: true, platformRole: true } });
+      if (!current) throw AppError.notFound('Super administrator');
+      if (current.id === actor.userId && input.operatorRole !== 'OWNER') {
+        const owners = await tx.user.count({ where: { tenantId: actor.tenantId, isPlatformAdmin: true, status: 'ACTIVE', platformRole: 'OWNER', deletedAt: null } });
+        if (owners <= 1) throw AppError.conflict('LAST_PLATFORM_OWNER', 'Keep at least one platform owner before changing your own operator tier.');
+      }
+      await tx.user.update({ where: { id: userId }, data: { platformRole: input.operatorRole, sessionVersion: { increment: 1 }, updatedBy: actor.userId } });
+      await tx.refreshToken.updateMany({ where: { tenantId: actor.tenantId, userId, revokedAt: null }, data: { revokedAt: new Date() } });
+      await this.audit.record(tx, {
+        tenantId: actor.tenantId, actorId: actor.userId, action: 'platform.super_admin.role_updated', entityType: 'User', entityId: userId,
+        before: { platformRole: current.platformRole }, after: { platformRole: input.operatorRole },
+      });
+      return { id: userId, platformRole: input.operatorRole };
+    });
+  }
+
   async resetSuperAdminPassword(userId: string, input: { temporaryPassword: string }) {
-    const actor = this.requirePlatformAdmin();
+    const actor = await this.requirePlatformPermission('platform.operator.write');
     const passwordHash = await this.passwords.hash(input.temporaryPassword);
     return this.prisma.transactionWithRetry(async (tx) => {
       const current = await tx.user.findFirst({ where: { tenantId: actor.tenantId, id: userId, isPlatformAdmin: true, deletedAt: null } });
@@ -1357,8 +1401,11 @@ export class PlatformService {
     );
     if (roleLinks.length) await tx.rolePermission.createMany({ data: roleLinks, skipDuplicates: true });
 
-    const adminRole = roles.find((role) => role.key === 'TENANT_ADMIN');
-    if (!adminRole) throw new Error('The tenant administrator role could not be initialized.');
+    // The first account is the accountable workspace owner, not a peer
+    // administrator: ownership is what makes transfer and owner-only controls
+    // reachable at all.
+    const adminRole = roles.find((role) => role.key === 'TENANT_OWNER') ?? roles.find((role) => role.key === 'TENANT_ADMIN');
+    if (!adminRole) throw new Error('The workspace owner role could not be initialized.');
     const owner = await tx.user.create({
       data: {
         tenantId,
@@ -1410,6 +1457,49 @@ export class PlatformService {
     const context = this.tenantContext.require();
     if (!context.isPlatformAdmin || !context.userId || !context.roles?.includes('PLATFORM_ADMIN')) throw AppError.forbidden('Super administrator access is required.');
     return { tenantId: context.tenantId, userId: context.userId };
+  }
+
+  /**
+   * Platform operators are tiered. Reads stay open to any operator; money,
+   * plan, and operator-account changes are checked against the stored tier so a
+   * read-only support account cannot issue invoices or mint another owner.
+   */
+  private async requirePlatformPermission(permission: string) {
+    const actor = this.requirePlatformAdmin();
+    const user = await this.prisma.db.user.findUnique({ where: { id: actor.userId }, select: { platformRole: true } });
+    if (!platformOperatorHasPermission(user?.platformRole, permission)) {
+      throw AppError.forbidden('Your platform operator tier does not allow this action.');
+    }
+    return actor;
+  }
+
+  /**
+   * The platform audit trail is the reserved workspace's own hash-chained log.
+   * Platform mutations are written there with an actor, so an operator can
+   * review control-plane activity without opening every tenant.
+   */
+  async listPlatformAudit(raw: Record<string, unknown>) {
+    const actor = this.requirePlatformAdmin();
+    const page = Math.max(1, Number.parseInt(String(raw.page ?? '1'), 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(String(raw.pageSize ?? '25'), 10) || 25));
+    const action = typeof raw.action === 'string' && raw.action.trim() ? raw.action.trim().slice(0, 120) : null;
+    const search = typeof raw.search === 'string' && raw.search.trim() ? raw.search.trim().slice(0, 200) : null;
+    const where: Prisma.AuditLogWhereInput = {
+      tenantId: actor.tenantId,
+      ...(action ? { action } : {}),
+      ...(search ? { OR: [{ action: { contains: search, mode: 'insensitive' } }, { entityRef: { contains: search, mode: 'insensitive' } }, { actorEmail: { contains: search, mode: 'insensitive' } }] } : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.db.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: { id: true, actorId: true, actorType: true, actorEmail: true, action: true, entityType: true, entityId: true, entityRef: true, severity: true, reason: true, createdAt: true },
+      }),
+      this.prisma.db.auditLog.count({ where }),
+    ]);
+    return { items, pagination: { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) } };
   }
 }
 
@@ -1550,6 +1640,9 @@ export class PlatformDirectoryController {
   @Patch('super-admins/:userId') @UsePipes(new ZodValidationPipe(updatePlatformAdminProfileSchema)) updateSuperAdmin(@Param('userId') userId: string, @Body() body: UpdatePlatformAdminProfileInput) { return this.platform.updateSuperAdminProfile(userId, body); }
   @Patch('super-admins/:userId/status') @UsePipes(new ZodValidationPipe(updateTenantUserStatusSchema)) updateSuperAdminStatus(@Param('userId') userId: string, @Body() body: UpdateTenantUserStatusInput) { return this.platform.updateSuperAdminStatus(userId, body); }
   @Post('super-admins/:userId/password-reset') @UsePipes(new ZodValidationPipe(resetTenantUserPasswordSchema)) resetSuperAdminPassword(@Param('userId') userId: string, @Body() body: { temporaryPassword: string }) { return this.platform.resetSuperAdminPassword(userId, body); }
+  @Patch('super-admins/:userId/operator-role') @UsePipes(new ZodValidationPipe(updatePlatformAdminRoleSchema)) updateSuperAdminRole(@Param('userId') userId: string, @Body() body: UpdatePlatformAdminRoleInput) { return this.platform.updateSuperAdminRole(userId, body); }
+  @Delete('super-admins/:userId/sessions') revokeSuperAdminSessions(@Param('userId') userId: string) { return this.platform.revokeSuperAdminSessions(userId); }
+  @Get('audit-logs') listPlatformAudit(@Query() query: Record<string, unknown>) { return this.platform.listPlatformAudit(query); }
 }
 
 @Module({ imports: [PrismaModule, TenantContextModule, AuthModule, AccessModule, OrganizationModule, AppConfigModule], controllers: [PlatformController, PlatformDirectoryController], providers: [PlatformService, TenantDomainDnsVerifier, PlatformSubscriptionLifecycleScheduler, PlatformAdminGuard] })

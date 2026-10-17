@@ -14,7 +14,7 @@ import { buildProvisionTenantRequest } from './provisioning-idempotency';
 type TenantStatus = (typeof TENANT_STATUSES)[number];
 type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 type UserStatus = (typeof USER_STATUSES)[number];
-type PlatformView = 'overview' | 'tenants' | 'tenant-details' | 'plans' | 'admins' | 'provision';
+type PlatformView = 'overview' | 'tenants' | 'tenant-details' | 'plans' | 'admins' | 'audit' | 'provision';
 interface TenantUsage { totalUsers: number; activeUsers: number; activeTenantAdmins: number; branches: number; organizationUnits: number; recordedPayments: number | null; latestSignInAt: string | null }
 interface TenantRow {
   id: string; slug: string; tenantHost: string; name: string; organizationType: string; enabledModules: string[]; status: TenantStatus; contactEmail: string | null; contactPhone: string | null; countryCode: string | null;
@@ -24,7 +24,8 @@ interface PageResult<T> { items: T[]; pagination: { page: number; pageSize: numb
 interface RoleLink { role: { id: string; key: string; name: string } }
 interface UserRow { id: string; email: string; phone: string | null; firstName: string; lastName: string | null; status: UserStatus; mustChangePassword: boolean; lastLoginAt: string | null; createdAt: string; userRoles: RoleLink[] }
 interface RoleRow { id: string; key: string; name: string; isSystem: boolean }
-interface SuperAdminRow { id: string; email: string; firstName: string; lastName: string | null; status: UserStatus; mustChangePassword: boolean; lastLoginAt: string | null; createdAt: string; invitationExpiresAt: string | null; emailVerifiedAt: string | null }
+interface SuperAdminRow { id: string; email: string; firstName: string; lastName: string | null; status: UserStatus; mustChangePassword: boolean; lastLoginAt: string | null; createdAt: string; invitationExpiresAt: string | null; emailVerifiedAt: string | null; platformRole: 'OWNER' | 'BILLING' | 'SUPPORT' }
+interface PlatformAuditRow { id: string; actorId: string | null; actorType: string; actorEmail: string | null; action: string; entityType: string; entityId: string | null; entityRef: string | null; severity: string; reason: string | null; createdAt: string }
 interface Overview {
   totalTenants: number; tenantStatuses: Record<TenantStatus, number>; subscriptionStatuses: Record<SubscriptionStatus, number>; activeSuperAdmins: number;
   activePlans: number;
@@ -76,6 +77,10 @@ export default function PlatformConsole() {
   const [superAdminSearch, setSuperAdminSearch] = useState('');
   const [superAdminStatus, setSuperAdminStatus] = useState('');
   const [superAdminPage, setSuperAdminPage] = useState(1);
+  const [platformAudit, setPlatformAudit] = useState<PageResult<PlatformAuditRow> | null>(null);
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditActionFilter, setAuditActionFilter] = useState('');
+  const [auditPage, setAuditPage] = useState(1);
   const [tenantSearch, setTenantSearch] = useState('');
   const [tenantStatusFilter, setTenantStatusFilter] = useState('');
   const [subscriptionFilter, setSubscriptionFilter] = useState('');
@@ -174,11 +179,19 @@ export default function PlatformConsole() {
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Tenant user records could not be loaded.'); }
   }, [userPage, userFilter, userSearch, userStatusFilter]);
 
+  const loadPlatformAudit = useCallback(async () => {
+    const params = new URLSearchParams({ page: String(auditPage), pageSize: '25' });
+    if (auditSearch.trim()) params.set('search', auditSearch.trim());
+    if (auditActionFilter) params.set('action', auditActionFilter);
+    setPlatformAudit(await apiRequest<PageResult<PlatformAuditRow>>('/platform/audit-logs?' + params.toString()));
+  }, [auditPage, auditSearch, auditActionFilter]);
+
   const loadBase = useCallback(async () => {
     const jobs: Array<Promise<unknown>> = [];
     if (activeView === 'overview' || activeView === 'plans') jobs.push(loadOverview());
     if (activeView === 'overview' || activeView === 'tenants') jobs.push(loadTenants());
     if (activeView === 'admins') jobs.push(loadSuperAdmins());
+    if (activeView === 'audit') jobs.push(loadPlatformAudit());
     if (activeView === 'plans' || activeView === 'provision' || activeView === 'tenant-details') jobs.push(loadPlans());
     if (activeView === 'tenant-details' && selectedTenant) {
       if (tenantDetailTab === 'users') jobs.push(loadTenantUsers(selectedTenant.id, userPage));
@@ -193,7 +206,7 @@ export default function PlatformConsole() {
     try { await Promise.all(jobs); }
     catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Platform records could not be loaded.'); }
     finally { setLoading(false); }
-  }, [activeView, tenantDetailTab, selectedTenant, userPage, loadOverview, loadTenants, loadSuperAdmins, loadPlans, loadTenantUsers, loadTenantBranches, loadTenantSubscriptions, loadTenantFeatures, loadTenantDomains]);
+  }, [activeView, tenantDetailTab, selectedTenant, userPage, loadOverview, loadTenants, loadSuperAdmins, loadPlatformAudit, loadPlans, loadTenantUsers, loadTenantBranches, loadTenantSubscriptions, loadTenantFeatures, loadTenantDomains]);
 
   const loadTenantDetails = useCallback(async (tenantId: string, isCurrent: () => boolean = () => true) => {
     setTenantDetailsLoading(true);
@@ -233,6 +246,7 @@ export default function PlatformConsole() {
       .catch((cause) => setError(messageFor(cause, 'Platform records could not be loaded.')))
       .finally(() => setLoading(false));
   }, [user?.isPlatformAdmin, activeView, loadOverview, loadTenants, loadSuperAdmins, loadPlans]);
+  useEffect(() => { if (activeView === 'audit') void loadPlatformAudit(); }, [activeView, loadPlatformAudit]);
   useEffect(() => { if (activeView === 'tenant-details' && tenantDetailTab === 'users' && selectedTenant) void loadTenantUsers(selectedTenant.id, userPage); }, [activeView, tenantDetailTab, selectedTenant?.id, userPage, userFilter, userSearch, userStatusFilter, loadTenantUsers]);
   useEffect(() => { if (activeView === 'tenant-details' && tenantDetailTab === 'billing' && selectedTenant) void loadTenantSubscriptions(selectedTenant.id); }, [activeView, tenantDetailTab, selectedTenant?.id, loadTenantSubscriptions]);
   useEffect(() => { if (activeView === 'tenant-details' && tenantDetailTab === 'modules' && selectedTenant) void loadTenantFeatures(selectedTenant.id); }, [activeView, tenantDetailTab, selectedTenant?.id, loadTenantFeatures]);
@@ -258,7 +272,7 @@ export default function PlatformConsole() {
     finally { setBusy(false); }
   }
 
-  function navigateTo(view: PlatformView) {
+ function navigateTo(view: PlatformView) {
     if (view === 'tenant-details') return;
     if (activeView === 'provision' && provisioningDirty && !window.confirm('Leave tenant setup? Your unsaved changes will be discarded.')) return;
     if (activeView === 'provision' && provisioningDirty) {
@@ -494,8 +508,10 @@ export default function PlatformConsole() {
     }, 'Organization details were updated and audited.');
   }
 
-  async function changeTenantStatus(tenant: TenantRow, status: TenantStatus) {
-    if ((status === 'SUSPENDED' || status === 'ARCHIVED') && !window.confirm(`${status === 'ARCHIVED' ? 'Archive' : 'Suspend'} ${tenant.name}? This will change access for everyone in that workspace.`)) return;
+  async function changeTenantStatus(tenant: TenantRow, status: TenantStatus, confirmation?: string) {
+    // Destructive lifecycle changes require the operator to type the workspace
+    // name, so a mis-click cannot suspend a customer's access.
+    if ((status === 'SUSPENDED' || status === 'ARCHIVED') && confirmation !== tenant.name) return;
     await runAction(async () => {
       const updated = await apiRequest<TenantRow>('/platform/tenants/' + tenant.id + '/status', { method: 'PATCH', body: JSON.stringify({ status }) });
       if (selectedTenant?.id === tenant.id) setSelectedTenant(updated);
@@ -515,7 +531,7 @@ export default function PlatformConsole() {
       });
       form.reset();
       await Promise.all([loadTenantUsers(selectedTenant.id, userPage), loadTenants()]);
-    }, 'Tenant Admin created. The account must change its temporary password at first sign-in.');
+    }, 'Workspace administrator created. The account must change its temporary password at first sign-in.');
   }
 
   async function resendTenantUserInvitation(row: UserRow) {
@@ -595,6 +611,20 @@ export default function PlatformConsole() {
     }, admin.firstName + ' ' + (status === 'ACTIVE' ? 'was activated.' : 'was deactivated.'));
   }
 
+  async function revokeSuperAdminSessions(admin: SuperAdminRow) {
+    await runAction(async () => {
+      await apiRequest('/platform/super-admins/' + admin.id + '/sessions', { method: 'DELETE' });
+      await loadSuperAdmins();
+    }, admin.email + ' was signed out of every device.');
+  }
+
+  async function updateSuperAdminOperatorRole(admin: SuperAdminRow, operatorRole: 'OWNER' | 'BILLING' | 'SUPPORT') {
+    await runAction(async () => {
+      await apiRequest('/platform/super-admins/' + admin.id + '/operator-role', { method: 'PATCH', body: JSON.stringify({ operatorRole }) });
+      await loadSuperAdmins();
+    }, admin.email + ' is now a ' + operatorRole.toLowerCase() + ' operator. Their sessions were revoked.');
+  }
+
   async function createTenantBranch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedTenant) return;
@@ -657,12 +687,12 @@ export default function PlatformConsole() {
     <div className="page-heading platform-heading">
       <div>
         <p className="eyebrow">WASL PLATFORM · CONTROL PLANE</p>
-        <h1>{activeView === 'overview' ? 'Platform overview' : activeView === 'tenants' ? 'Tenant workspaces' : activeView === 'tenant-details' ? selectedTenant?.name ?? 'Tenant details' : activeView === 'plans' ? 'Plans and billing' : activeView === 'admins' ? 'Platform administrators' : 'Provision a tenant'}</h1>
-        <p className="muted">{activeView === 'overview' ? 'A clear view of workspace health, subscriptions, and platform access.' : activeView === 'tenants' ? 'Find an organization and manage its workspace settings and access.' : activeView === 'tenant-details' ? 'Review this workspace’s configuration, access, usage, and billing.' : activeView === 'plans' ? 'Configure the plans, modules, and limits available to organizations.' : activeView === 'admins' ? 'Manage the people who can access the Wasl platform control plane.' : 'Set up an organization and invite its first Tenant Admin.'}</p>
+        <h1>{activeView === 'overview' ? 'Platform overview' : activeView === 'tenants' ? 'Organization workspaces' : activeView === 'tenant-details' ? selectedTenant?.name ?? 'Workspace details' : activeView === 'plans' ? 'Plans and billing' : activeView === 'admins' ? 'Platform administrators' : activeView === 'audit' ? 'Platform audit trail' : 'Provision a workspace'}</h1>
+        <p className="muted">{activeView === 'overview' ? 'A clear view of workspace health, subscriptions, and platform access.' : activeView === 'tenants' ? 'Find an organization and manage its workspace settings and access.' : activeView === 'tenant-details' ? 'Review this workspace’s configuration, access, usage, and billing.' : activeView === 'plans' ? 'Configure the plans, modules, and limits available to organizations.' : activeView === 'admins' ? 'Manage the people who can access the Wasl platform control plane.' : activeView === 'audit' ? 'Every control-plane action with its actor, target, and time.' : 'Set up an organization and invite its first workspace owner.'}</p>
       </div>
       <div className="platform-heading-actions">
         <button className="button button-secondary" onClick={() => void refreshCurrentView()} disabled={loading || tenantDetailsLoading || busy}><RefreshCw size={15} /> Refresh</button>
-        {activeView === 'provision' || activeView === 'tenant-details' ? <button type="button" className="button button-secondary" onClick={() => navigateTo('tenants')}>Back to workspaces</button> : <button type="button" className="button button-primary" onClick={() => navigateTo('provision')}><Building2 size={15} /> Provision a tenant</button>}
+        {activeView === 'provision' || activeView === 'tenant-details' ? <button type="button" className="button button-secondary" onClick={() => navigateTo('tenants')}>Back to workspaces</button> : <button type="button" className="button button-primary" onClick={() => navigateTo('provision')}><Building2 size={15} /> Provision a workspace</button>}
       </div>
     </div>
     {error && <div className="notice notice-error" role="alert">{error}</div>}
@@ -683,7 +713,7 @@ export default function PlatformConsole() {
             <span className="platform-overview-tenant-icon"><Building2 size={17} /></span>
             <button type="button" className="platform-overview-tenant-main" onClick={() => void selectTenant(row)}><strong>{row.name}</strong><small>{row.tenantHost} · {row.usage.activeUsers} active users</small></button>
             <span className={'status-pill ' + (row.status === 'ACTIVE' ? 'status-green' : row.status === 'SUSPENDED' || row.status === 'ARCHIVED' ? 'status-red' : 'status-amber')}>{enumLabel(row.status)}</span>
-          </article>)}</div> : <div className="empty-state"><span className="empty-icon"><Building2 /></span><h3>No workspaces yet</h3><p>Create an organization workspace to get started.</p><button type="button" className="button button-primary button-small" onClick={() => navigateTo('provision')}>Provision a tenant</button></div>}
+          </article>)}</div> : <div className="empty-state"><span className="empty-icon"><Building2 /></span><h3>No workspaces yet</h3><p>Create an organization workspace to get started.</p><button type="button" className="button button-primary button-small" onClick={() => navigateTo('provision')}>Provision a workspace</button></div>}
         </section>
         <aside className="platform-overview-side">
           <section className="surface-panel platform-overview-panel">
@@ -706,7 +736,7 @@ export default function PlatformConsole() {
         <div><small>Open invoices</small><strong>{formatIndianNumber((overview?.invoicesByCurrency ?? []).reduce((total, row) => total + row.openCount, 0)) ?? '—'}</strong><span>{(overview?.invoicesByCurrency ?? []).reduce((total, row) => total + row.overdueCount, 0)} overdue</span></div>
         <div><small>Outstanding balance</small><strong>{amountsByCurrency(overview?.invoicesByCurrency ?? [], 'outstandingAmount') || formatIndianCurrency('0', 'INR')}</strong><span>Across platform subscriptions</span></div>
         <div><small>Refund requests</small><strong>{formatIndianNumber((overview?.requestedRefundsByCurrency ?? []).reduce((total, row) => total + row.count, 0)) ?? '—'}</strong><span>{amountsByCurrency(overview?.requestedRefundsByCurrency ?? [], 'amount') || 'No pending refund amount'}</span></div>
-        <button type="button" className="button button-secondary button-small" onClick={() => navigateTo('tenants')}>Open tenant billing <span aria-hidden="true">→</span></button>
+        <button type="button" className="button button-secondary button-small" onClick={() => navigateTo('tenants')}>Open workspace billing <span aria-hidden="true">→</span></button>
       </div>
       <PlanEditor onSave={(payload) => void savePlan(payload)} />
       {plans.length ? <div className="platform-plan-list">{plans.map((plan) => <article className="platform-plan-card" key={plan.id}>
@@ -726,20 +756,20 @@ export default function PlatformConsole() {
       </section>}
 
       {activeView === 'tenants' && <section id="tenants" className="surface-panel platform-directory-panel">
-        <div className="section-heading section-heading-panel"><div><h2>Tenant directory</h2><p>{formatIndianNumber(tenants?.pagination.total) ?? '—'} tenant workspaces</p></div><Building2 size={18} /></div>
+        <div className="section-heading section-heading-panel"><div><h2>Workspace directory</h2><p>{formatIndianNumber(tenants?.pagination.total) ?? '—'} organization workspaces</p></div><Building2 size={18} /></div>
         <div className="platform-filter-grid">
           <label className="search-box"><Search size={16} /><input aria-label="Search tenants" value={tenantSearch} onChange={(event) => { setPage(1); setTenantSearch(event.currentTarget.value); }} placeholder="Name, subdomain, contact" /></label>
           <select aria-label="Filter by tenant status" value={tenantStatusFilter} onChange={(event) => { setPage(1); setTenantStatusFilter(event.currentTarget.value); }}><option value="">All access states</option>{TENANT_STATUSES.map((status) => <option key={status} value={status}>{enumLabel(status)}</option>)}</select>
           <select aria-label="Filter by subscription status" value={subscriptionFilter} onChange={(event) => { setPage(1); setSubscriptionFilter(event.currentTarget.value); }}><option value="">All subscriptions</option>{SUBSCRIPTION_STATUSES.map((status) => <option key={status} value={status}>{enumLabel(status)}</option>)}</select>
         </div>
-        {loading ? <div className="compact-empty">Loading tenant records…</div> : tenants?.items.length ? <div className="platform-tenant-list">{tenants.items.map((tenant) => <TenantCard key={tenant.id} tenant={tenant} selected={selectedTenant?.id === tenant.id} onSelect={() => void selectTenant(tenant)} onStatus={(status) => void changeTenantStatus(tenant, status)} />)}</div> : <div className="empty-state"><span className="empty-icon"><Building2 /></span><h3>No tenant workspaces found</h3><p>Adjust the search or filters, or provision a workspace.</p></div>}
+        {loading ? <div className="compact-empty">Loading workspace records…</div> : tenants?.items.length ? <div className="platform-tenant-list">{tenants.items.map((tenant) => <TenantCard key={tenant.id} tenant={tenant} selected={selectedTenant?.id === tenant.id} onSelect={() => void selectTenant(tenant)} onStatus={(status, confirmation) => void changeTenantStatus(tenant, status, confirmation)} />)}</div> : <div className="empty-state"><span className="empty-icon"><Building2 /></span><h3>No workspaces found</h3><p>Adjust the search or filters, or provision a workspace.</p></div>}
         {tenants && <div className="table-footer platform-pagination"><span>Page {tenants.pagination.page} of {Math.max(tenants.pagination.totalPages, 1)}</span><div><button className="button button-secondary button-small" disabled={page <= 1 || busy} onClick={() => setPage((value) => Math.max(1, value - 1))}>Previous</button><button className="button button-secondary button-small" disabled={page >= tenants.pagination.totalPages || busy} onClick={() => setPage((value) => value + 1)}>Next</button></div></div>}
       </section>}
     </div>}
 
     {activeView === 'tenant-details' && !selectedTenant && <section className="surface-panel platform-tenant-detail"><div className="compact-empty" role="status">{tenantDetailsLoading ? 'Loading tenant details…' : error || 'Tenant workspace not found.'}</div></section>}
     {activeView === 'tenant-details' && selectedTenant && <section id="tenant-details" className="surface-panel platform-tenant-detail">
-      <div className="section-heading section-heading-panel"><div><p className="eyebrow">TENANT OPERATIONS</p><h2>{selectedTenant.name}</h2><p>{selectedTenant.tenantHost && <a className="text-link" href={tenantHref(selectedTenant.tenantHost)} target="_blank" rel="noopener noreferrer">{tenantHref(selectedTenant.tenantHost)} <ExternalLink size={13} /></a>}</p></div><button className="text-button" onClick={() => { setSelectedTenant(null); navigateTo('tenants'); }}>Back to tenant directory</button></div>
+      <div className="section-heading section-heading-panel"><div><p className="eyebrow">WORKSPACE OPERATIONS</p><h2>{selectedTenant.name}</h2><p>{selectedTenant.tenantHost && <a className="text-link" href={tenantHref(selectedTenant.tenantHost)} target="_blank" rel="noopener noreferrer">{tenantHref(selectedTenant.tenantHost)} <ExternalLink size={13} /></a>}</p></div><button className="text-button" onClick={() => { setSelectedTenant(null); navigateTo('tenants'); }}>Back to workspace directory</button></div>
       <nav className="platform-detail-tabs" aria-label="Tenant details sections" role="tablist">
         {TENANT_DETAIL_TABS.map(([key, label], index) => <button key={key} type="button" role="tab" id={`tenant-detail-tab-${key}`} aria-selected={tenantDetailTab === key} aria-controls={`tenant-detail-${key}`} tabIndex={tenantDetailTab === key ? 0 : -1} onKeyDown={(event) => {
           if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -847,8 +877,24 @@ export default function PlatformConsole() {
 
     {activeView === 'admins' && <section id="platform-admins" className="surface-panel platform-super-admins"><div className="section-heading section-heading-panel"><div><p className="eyebrow">PLATFORM IDENTITY SCOPE</p><h2>Super Admin accounts</h2><p>Platform operators use a reserved identity scope that is separate from every tenant directory.</p></div><ShieldCheck size={18} /></div>
       <div className="platform-super-admin-layout"><form className="platform-form platform-super-admin-form" onSubmit={createSuperAdmin}><h3>Invite a Super Admin</h3><div className="platform-form-grid"><label>First name<input name="firstName" required /></label><label>Last name<input name="lastName" /></label><label>Email<input name="email" type="email" required /></label></div><p className="muted">An invitation is sent to the platform sign-in hostname. It expires after 48 hours and the recipient sets their own password.</p><button className="button button-primary button-small" disabled={busy}>Send invitation</button></form>
-        <div><div className="platform-filter-grid"><label className="search-box"><Search size={16} /><input aria-label="Search Super Admin accounts" value={superAdminSearch} onChange={(event) => { setSuperAdminPage(1); setSuperAdminSearch(event.currentTarget.value); }} placeholder="Search Super Admins" /></label><select aria-label="Filter Super Admin accounts by status" value={superAdminStatus} onChange={(event) => { setSuperAdminPage(1); setSuperAdminStatus(event.currentTarget.value); }}><option value="">All statuses</option>{USER_STATUSES.map((status) => <option key={status} value={status}>{enumLabel(status)}</option>)}</select></div><div className="platform-admin-list">{(superAdmins?.items ?? []).map((admin) => <article className="platform-admin-card" key={admin.id}><div className="platform-user-heading"><div><strong>{admin.firstName} {admin.lastName ?? ''}</strong><small>{admin.email}</small></div><span className={'status-pill ' + (admin.status === 'ACTIVE' ? 'status-green' : admin.status === 'INVITED' ? 'status-amber' : 'status-red')}>{enumLabel(admin.status)}</span></div><p className="platform-user-roles">Last sign-in {admin.lastLoginAt ? formatIndianDateTime(new Date(admin.lastLoginAt)) : 'never'}{admin.status === 'INVITED' ? ` · invitation expires ${admin.invitationExpiresAt ? formatIndianDateTime(new Date(admin.invitationExpiresAt)) : 'unknown'}` : ''}{admin.mustChangePassword && admin.emailVerifiedAt ? ' · password change required' : ''}</p><div className="platform-user-actions">{!admin.emailVerifiedAt ? <><button className="button button-secondary button-small" onClick={() => void resendSuperAdminInvitation(admin)} disabled={busy}>{admin.status === 'INVITED' ? 'Resend invitation' : 'Send invitation'}</button>{admin.status === 'INVITED' && <button className="button button-secondary button-small" onClick={() => void updateSuperAdminStatus(admin)} disabled={busy}>Cancel invitation</button>}</> : <button className="button button-secondary button-small" onClick={() => void updateSuperAdminStatus(admin)} disabled={busy || (admin.id === user.id && admin.status === 'ACTIVE')}>{admin.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}</button>}</div><details className="platform-user-edit"><summary>Edit profile or reset password</summary><div className="platform-edit-grid"><form className="platform-form" onSubmit={(event) => void updateSuperAdminProfile(event, admin.id)}><label>First name<input name="firstName" required defaultValue={admin.firstName} /></label><label>Last name<input name="lastName" defaultValue={admin.lastName ?? ''} /></label><label>Email<input name="email" type="email" required defaultValue={admin.email} /></label><button className="button button-secondary button-small" disabled={busy}>Save profile</button></form>{admin.emailVerifiedAt && <form className="platform-form" onSubmit={(event) => void resetSuperAdminPassword(event, admin.id)}><label>Temporary password<input name="temporaryPassword" type="password" required minLength={12} autoComplete="new-password" /></label><button className="button button-secondary button-small" disabled={busy}>Reset password</button></form>}</div></details></article>)}</div><div className="table-footer platform-pagination"><span>{formatIndianNumber(superAdmins?.pagination.total) ?? 0} operators · page {superAdmins?.pagination.page ?? 1} of {Math.max(superAdmins?.pagination.totalPages ?? 1, 1)}</span><div><button className="button button-secondary button-small" disabled={superAdminPage <= 1 || busy} onClick={() => setSuperAdminPage((value) => Math.max(1, value - 1))}>Previous</button><button className="button button-secondary button-small" disabled={!superAdmins || superAdminPage >= superAdmins.pagination.totalPages || busy} onClick={() => setSuperAdminPage((value) => value + 1)}>Next</button></div></div></div>
+        <div><div className="platform-filter-grid"><label className="search-box"><Search size={16} /><input aria-label="Search Super Admin accounts" value={superAdminSearch} onChange={(event) => { setSuperAdminPage(1); setSuperAdminSearch(event.currentTarget.value); }} placeholder="Search Super Admins" /></label><select aria-label="Filter Super Admin accounts by status" value={superAdminStatus} onChange={(event) => { setSuperAdminPage(1); setSuperAdminStatus(event.currentTarget.value); }}><option value="">All statuses</option>{USER_STATUSES.map((status) => <option key={status} value={status}>{enumLabel(status)}</option>)}</select></div><div className="platform-admin-list">{(superAdmins?.items ?? []).map((admin) => <article className="platform-admin-card" key={admin.id}><div className="platform-user-heading"><div><strong>{admin.firstName} {admin.lastName ?? ''}</strong><small>{admin.email}</small></div><span className={'status-pill ' + (admin.status === 'ACTIVE' ? 'status-green' : admin.status === 'INVITED' ? 'status-amber' : 'status-red')}>{enumLabel(admin.status)}</span></div><p className="platform-user-roles">Last sign-in {admin.lastLoginAt ? formatIndianDateTime(new Date(admin.lastLoginAt)) : 'never'}{admin.status === 'INVITED' ? ` · invitation expires ${admin.invitationExpiresAt ? formatIndianDateTime(new Date(admin.invitationExpiresAt)) : 'unknown'}` : ''}{admin.mustChangePassword && admin.emailVerifiedAt ? ' · password change required' : ''}</p><div className="platform-user-actions">{!admin.emailVerifiedAt ? <><button className="button button-secondary button-small" onClick={() => void resendSuperAdminInvitation(admin)} disabled={busy}>{admin.status === 'INVITED' ? 'Resend invitation' : 'Send invitation'}</button>{admin.status === 'INVITED' && <button className="button button-secondary button-small" onClick={() => void updateSuperAdminStatus(admin)} disabled={busy}>Cancel invitation</button>}</> : <button className="button button-secondary button-small" onClick={() => void updateSuperAdminStatus(admin)} disabled={busy || (admin.id === user.id && admin.status === 'ACTIVE')}>{admin.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}</button>}<button className="button button-secondary button-small" onClick={() => void revokeSuperAdminSessions(admin)} disabled={busy}>Sign out all sessions</button></div><label className="platform-operator-tier">Operator tier<select aria-label={`Operator tier for ${admin.email}`} value={admin.platformRole} disabled={busy} onChange={(event) => void updateSuperAdminOperatorRole(admin, event.currentTarget.value as 'OWNER' | 'BILLING' | 'SUPPORT')}><option value="OWNER">Owner — full control</option><option value="BILLING">Billing — invoices and refunds</option><option value="SUPPORT">Support — read and revoke sessions</option></select></label><details className="platform-user-edit"><summary>Edit profile or reset password</summary><div className="platform-edit-grid"><form className="platform-form" onSubmit={(event) => void updateSuperAdminProfile(event, admin.id)}><label>First name<input name="firstName" required defaultValue={admin.firstName} /></label><label>Last name<input name="lastName" defaultValue={admin.lastName ?? ''} /></label><label>Email<input name="email" type="email" required defaultValue={admin.email} /></label><button className="button button-secondary button-small" disabled={busy}>Save profile</button></form>{admin.emailVerifiedAt && <form className="platform-form" onSubmit={(event) => void resetSuperAdminPassword(event, admin.id)}><label>Temporary password<input name="temporaryPassword" type="password" required minLength={12} autoComplete="new-password" /></label><button className="button button-secondary button-small" disabled={busy}>Reset password</button></form>}</div></details></article>)}</div><div className="table-footer platform-pagination"><span>{formatIndianNumber(superAdmins?.pagination.total) ?? 0} operators · page {superAdmins?.pagination.page ?? 1} of {Math.max(superAdmins?.pagination.totalPages ?? 1, 1)}</span><div><button className="button button-secondary button-small" disabled={superAdminPage <= 1 || busy} onClick={() => setSuperAdminPage((value) => Math.max(1, value - 1))}>Previous</button><button className="button button-secondary button-small" disabled={!superAdmins || superAdminPage >= superAdmins.pagination.totalPages || busy} onClick={() => setSuperAdminPage((value) => value + 1)}>Next</button></div></div></div>
       </div>
+    </section>}
+
+    {activeView === 'audit' && <section id="platform-audit" className="surface-panel platform-audit">
+      <div className="section-heading section-heading-panel"><div><p className="eyebrow">CONTROL PLANE</p><h2>Platform audit trail</h2><p>Operator invitations, plan changes, tenant lifecycle, and billing decisions with their actor and time.</p></div><ShieldCheck size={18} /></div>
+      <div className="platform-filter-grid">
+        <label className="search-box"><Search size={16} /><input aria-label="Search platform audit actions" value={auditSearch} onChange={(event) => { setAuditPage(1); setAuditSearch(event.currentTarget.value); }} placeholder="Search action, target, or actor" /></label>
+        <label className="filter-label">Action<input aria-label="Filter platform audit by action" value={auditActionFilter} onChange={(event) => { setAuditPage(1); setAuditActionFilter(event.currentTarget.value); }} placeholder="platform.super_admin" /></label>
+      </div>
+      {platformAudit?.items.length ? <div className="table-wrap"><table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Severity</th></tr></thead><tbody>{platformAudit.items.map((row) => <tr key={row.id}>
+        <td>{formatIndianDateTime(new Date(row.createdAt))}</td>
+        <td><strong>{row.actorEmail ?? (row.actorType === 'SYSTEM' ? 'System' : row.actorId ?? 'Unknown')}</strong><small className="table-subtext">{row.actorType}</small></td>
+        <td><span className="mono-cell">{row.action}</span>{row.reason && <small className="table-subtext">{row.reason}</small>}</td>
+        <td>{row.entityType}<small className="table-subtext">{row.entityRef ?? row.entityId ?? '—'}</small></td>
+        <td><span className={'status-pill ' + (row.severity === 'CRITICAL' ? 'status-red' : row.severity === 'WARNING' ? 'status-amber' : 'status-gray')}>{row.severity}</span></td>
+      </tr>)}</tbody></table></div> : <p className="empty-inline">{loading ? 'Loading platform activity…' : 'No platform activity matches these filters yet.'}</p>}
+      <div className="table-footer platform-pagination"><span>{formatIndianNumber(platformAudit?.pagination.total) ?? 0} recorded actions · page {platformAudit?.pagination.page ?? 1} of {Math.max(platformAudit?.pagination.totalPages ?? 1, 1)}</span><div><button className="button button-secondary button-small" disabled={auditPage <= 1 || busy} onClick={() => setAuditPage((value) => Math.max(1, value - 1))}>Previous</button><button className="button button-secondary button-small" disabled={!platformAudit || auditPage >= platformAudit.pagination.totalPages || busy} onClick={() => setAuditPage((value) => value + 1)}>Next</button></div></div>
     </section>}
   </main>;
 }
@@ -859,6 +905,7 @@ function platformViewFromPath(pathname: string): PlatformView {
   if (pathname === '/platform/provision') return 'provision';
   if (pathname === '/platform/plans') return 'plans';
   if (pathname === '/platform/admins') return 'admins';
+  if (pathname === '/platform/audit') return 'audit';
   return 'overview';
 }
 
@@ -867,6 +914,7 @@ function platformPathForView(view: PlatformView): string {
   if (view === 'provision') return '/platform/provision';
   if (view === 'plans') return '/platform/plans';
   if (view === 'admins') return '/platform/admins';
+  if (view === 'audit') return '/platform/audit';
   return '/platform';
 }
 
@@ -875,14 +923,17 @@ function tenantDetailTabFromHash(hash: string): TenantDetailTab | null {
   return TENANT_DETAIL_TABS.find(([tab]) => tab === key)?.[0] ?? null;
 }
 
-function TenantCard({ tenant, selected, onSelect, onStatus }: { tenant: TenantRow; selected: boolean; onSelect: () => void; onStatus: (status: TenantStatus) => void }) {
-  const nextStatus: TenantStatus = tenant.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
+function TenantCard({ tenant, selected, onSelect, onStatus }: { tenant: TenantRow; selected: boolean; onSelect: () => void; onStatus: (status: TenantStatus, confirmation?: string) => void }) {
+  const [confirmation, setConfirmation] = useState('');
+  const canSuspend = tenant.status === 'ACTIVE';
+  const canArchive = tenant.status !== 'ARCHIVED';
+  const confirmed = confirmation === tenant.name;
   return <article className={'platform-tenant-card ' + (selected ? 'selected' : '')}>
     <div className="platform-tenant-heading"><div><strong>{tenant.name}</strong><small><a href={tenantHref(tenant.tenantHost)} target="_blank" rel="noopener noreferrer">{tenant.tenantHost} <ExternalLink size={12} /></a></small></div><span className={'status-pill ' + (tenant.status === 'ACTIVE' ? 'status-green' : tenant.status === 'SUSPENDED' || tenant.status === 'ARCHIVED' ? 'status-red' : 'status-amber')}>{enumLabel(tenant.status)}</span></div>
     <p>{tenant.contactEmail ?? 'No contact email'}{tenant.countryCode ? ' · ' + tenant.countryCode : ''}</p>
     <div className="platform-tenant-metadata"><span>{organizationCategoryDisplayName(tenant.organizationType)}</span><span>{enumLabel(tenant.subscriptionStatus)}{tenant.subscriptionPlan ? ' · ' + tenant.subscriptionPlan : ''}</span><span>{tenant.usage.activeTenantAdmins} active admins</span><span>{tenant.usage.activeUsers} active users</span></div>
     <small>Trial {tenant.trialEndsAt ? 'ends ' + formatIndianDate(new Date(tenant.trialEndsAt)) : 'date not set'} · Latest sign-in {tenant.usage.latestSignInAt ? formatIndianDate(new Date(tenant.usage.latestSignInAt)) : 'none'}</small>
-    <div className="platform-tenant-actions"><button className="button button-secondary button-small" onClick={onSelect}>Manage tenant</button><button className="button button-secondary button-small" disabled={busyFromDisabled(tenant.status)} onClick={() => onStatus(nextStatus)}>{tenant.status === 'ACTIVE' ? 'Suspend' : 'Activate'}</button>{tenant.status !== 'ARCHIVED' && <button className="text-button platform-archive-action" onClick={() => onStatus('ARCHIVED')}>Archive</button>}</div>
+    <div className="platform-tenant-actions"><button className="button button-secondary button-small" onClick={onSelect}>Manage workspace</button>{tenant.status !== 'ACTIVE' && <button className="button button-secondary button-small" disabled={busyFromDisabled(tenant.status)} onClick={() => onStatus('ACTIVE')}>Activate</button>}{(canSuspend || canArchive) && <details className="platform-tenant-danger"><summary className="text-button platform-archive-action">Suspend or archive…</summary><div className="platform-confirm-body"><p className="muted">Type <strong>{tenant.name}</strong> to confirm. Everyone in this workspace loses access until it is activated again; financial records are never deleted.</p><input aria-label={`Type the workspace name ${tenant.name} to confirm`} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /><div className="inline-actions">{canSuspend && <button className="button button-secondary button-small" disabled={!confirmed} onClick={() => { onStatus('SUSPENDED', confirmation); setConfirmation(''); }}>Suspend workspace</button>}{canArchive && <button className="button button-secondary button-small platform-archive-action" disabled={!confirmed} onClick={() => { onStatus('ARCHIVED', confirmation); setConfirmation(''); }}>Archive workspace</button>}</div></div></details>}</div>
   </article>;
 }
 
@@ -943,18 +994,18 @@ function Kpi({ label, value, detail, icon }: { label: string; value: number | st
 
 function mrrHeadline(rows: Overview['subscriptionsByCurrency'] | undefined): string {
   if (!rows?.length) return formatIndianCurrency('0', 'INR');
-  if (rows.some((row) => row.currency !== 'INR')) return rows.every((row) => Number(row.monthlyRecurringRevenue) === 0) ? formatIndianCurrency('0', 'INR') : 'Review currency';
-  return rows.length === 1 ? formatIndianCurrency(rows[0]!.monthlyRecurringRevenue, 'INR') : `${rows.length} billing totals`;
+  // Money in different currencies is never summed. Each currency keeps its own
+  // amount so a USD subscription cannot be silently read as INR.
+  return rows.map((row) => formatIndianCurrency(row.monthlyRecurringRevenue, row.currency)).join(' · ');
 }
 
 function amountsByCurrency<T extends { currency: string }>(rows: T[], field: keyof T): string {
-  if (rows.some((row) => row.currency !== 'INR')) return rows.every((row) => Number(row[field]) === 0) ? formatIndianCurrency('0', 'INR') : 'Review currency';
-  return rows.map((row) => formatIndianCurrency(String(row[field]), 'INR')).join(' · ');
+  if (!rows.length) return '';
+  return rows.map((row) => formatIndianCurrency(String(row[field]), row.currency)).join(' · ');
 }
 
 function formatPlatformCurrency(value: string | number, currency: string): string {
-  if (currency === 'INR') return formatIndianCurrency(value, 'INR');
-  return Number(value) === 0 ? formatIndianCurrency('0', 'INR') : 'Review currency';
+  return formatIndianCurrency(value, currency);
 }
 
 function Usage({ label, value }: { label: string; value: number | string }) {

@@ -1,5 +1,5 @@
 'use client';
-import { formatIndianDate } from '../../lib/locale';
+import { formatIndianCurrency, formatIndianDate } from '../../lib/locale';
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ASSIGNMENT_TARGET_TYPES, FEE_FREQUENCIES, FEE_OPTIONALITIES, enumLabel } from '@fee/types';
@@ -159,8 +159,8 @@ export default function FeeStructuresPage() {
             <div className="version-heading"><div><strong>Version {version.version}</strong><span className={`status-pill ${version.status === 'ACTIVE' ? 'status-green' : 'status-gray'}`}>{enumLabel(version.status)}</span></div>{version.status === 'DRAFT' && <button className="button button-secondary button-small" disabled={busy} onClick={() => void publish(version.id)}>Publish</button>}{version.status === 'ACTIVE' && !version.effectiveTo && <button className="button button-secondary button-small" disabled={busy} onClick={() => setClosingVersion(closingVersion === version.id ? null : version.id)}>Close window</button>}</div>
             <p className="version-date">Effective {formatIndianDate(new Date(version.effectiveFrom))}{version.effectiveTo ? ` – ${formatIndianDate(new Date(version.effectiveTo))}` : ' · no end date'}</p>
             {closingVersion === version.id && <form className="version-close-form" onSubmit={(event) => void closeVersion(event, version.id)}><label>Last effective date<input type="date" name="effectiveTo" required min={new Date().toISOString().slice(0, 10)} defaultValue={new Date().toISOString().slice(0, 10)} /></label><label>Reason<input name="reason" required maxLength={1000} placeholder="Why is this schedule being superseded?" /></label><button className="button button-primary button-small" disabled={busy}>{busy ? 'Saving…' : 'Close active window'}</button></form>}
-            <div className="version-items">{version.items.map((item, index) => <div className="version-item" key={item.id ?? `${item.feeTypeId}-${index}`}><span>{types.find((type) => type.id === item.feeTypeId)?.name ?? 'Fee item'}<small>{itemDetails(item)}</small></span><strong>{item.amount}</strong></div>)}</div>
-            {version.totalAmount !== null && <div className="version-total"><span>Published schedule total</span><strong>{version.totalAmount}</strong></div>}
+            <div className="version-items">{version.items.map((item, index) => <div className="version-item" key={item.id ?? `${item.feeTypeId}-${index}`}><span>{types.find((type) => type.id === item.feeTypeId)?.name ?? 'Fee item'}<small>{itemDetails(item)}</small></span><strong>{formatIndianCurrency(item.amount)}</strong></div>)}</div>
+            {version.totalAmount !== null && <div className="version-total"><span>Published schedule total</span><strong>{formatIndianCurrency(version.totalAmount)}</strong></div>}
           </article>)}
         </> : <div className="empty-state detail-empty"><span className="empty-icon"><WalletCards /></span><h2>Select a schedule</h2><p>Its effective dates, fee items, and publication status will appear here.</p></div>}
       </section>
